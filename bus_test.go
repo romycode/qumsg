@@ -33,6 +33,11 @@ type samePointerName struct{}
 
 func (samePointerName) Name() string { return "pointer.named" }
 
+type fieldNamed struct{ meta *struct{ name string } }
+
+// Name depends on a field, so it panics on the zero value used by Register.
+func (m fieldNamed) Name() string { return m.meta.name }
+
 type ctxKey struct{}
 
 type customErr struct{ msg string }
@@ -243,6 +248,17 @@ func TestRegisterValidation(t *testing.T) {
 		err := qumsg.New().Register(func(context.Context, emptyName) error { return nil })
 		if !errors.Is(err, qumsg.ErrEmptyName) {
 			t.Fatalf("got %v", err)
+		}
+	})
+
+	t.Run("name panics", func(t *testing.T) {
+		bus := qumsg.New()
+		err := bus.Register(func(context.Context, fieldNamed) error { return nil })
+		if !errors.Is(err, qumsg.ErrNamePanic) {
+			t.Fatalf("got %v, want ErrNamePanic", err)
+		}
+		if err := bus.Dispatch(t.Context(), fieldNamed{}); !errors.Is(err, qumsg.ErrNoHandler) {
+			t.Fatalf("rejected handler was added: %v", err)
 		}
 	})
 

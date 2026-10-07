@@ -27,6 +27,9 @@ var (
 	// ErrEmptyName is returned by Register when the message type implements
 	// NamedMessage and Name returns an empty string.
 	ErrEmptyName = errors.New("qumsg: message name is empty")
+	// ErrNamePanic is returned by Register when Name panics on the zero value
+	// of the message type, usually because it depends on the message fields.
+	ErrNamePanic = errors.New("qumsg: message Name panicked")
 	// ErrDuplicateName is returned by Register when another message type is
 	// already registered with the same name.
 	ErrDuplicateName = errors.New("qumsg: message name already registered for another type")
@@ -109,7 +112,10 @@ func (b *Bus) Register[T any](handler func(context.Context, T) error) error {
 		return fmt.Errorf("%w: %s", ErrInterfaceType, typ)
 	}
 
-	name, named := messageName[T]()
+	name, named, err := messageName[T]()
+	if err != nil {
+		return err
+	}
 	if named && name == "" {
 		return fmt.Errorf("%w: %s", ErrEmptyName, typ)
 	}
@@ -156,17 +162,26 @@ func (b *Bus) handle(ctx context.Context, message any) error {
 
 // messageName returns the alias of T if it implements NamedMessage. For
 // pointer types it calls Name on a pointer to a zero value instead of a nil
-// pointer, so value-receiver methods do not panic.
-func messageName[T any]() (string, bool) {
+// pointer, so value-receiver methods do not panic. A panic inside Name is
+// returned as ErrNamePanic.
+func messageName[T any]() (name string, named bool, err error) {
+	typ := reflect.TypeFor[T]()
+
 	var sample T
-	if typ := reflect.TypeFor[T](); typ.Kind() == reflect.Pointer {
+	if typ.Kind() == reflect.Pointer {
 		sample = reflect.New(typ.Elem()).Interface().(T)
 	}
 
-	named, ok := any(sample).(NamedMessage)
+	m, ok := any(sample).(NamedMessage)
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 
-	return named.Name(), true
+	defer func() {
+		if r := recover(); r != nil {
+			name, named, err = "", true, fmt.Errorf("%w: %s: %v", ErrNamePanic, typ, r)
+		}
+	}()
+
+	return m.Name(), true, nil
 }

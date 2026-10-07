@@ -30,7 +30,7 @@ Todo está en `bus.go`. Los tests usan el paquete externo `qumsg_test`, así que
 - **Resolución por tipo exacto**: `Bus.routes` es `map[reflect.Type]route`. `Register[T]` usa `reflect.TypeFor[T]()` y `Dispatch` usa `reflect.TypeOf(message)`, así que `T` y `*T` son rutas distintas y no hay búsqueda por interfaces (por eso `Register` rechaza `T` interfaz).
 - **Handlers tipados**: cada ruta es un `handlers[T]` (`[]func(context.Context, T) error`) que implementa la interfaz interna `route`. La aserción `message.(T)` se hace una vez por dispatch. Los handlers corren en orden de registro, se comprueba `ctx.Err()` antes de cada uno y el primer error corta la ejecución.
 - **Middleware**: `New` compone la cadena una sola vez alrededor de `b.handle` (el primero es el más externo). Envuelve el dispatch completo, no cada handler, y por eso trabaja con `any`.
-- **Alias (`NamedMessage`)**: se lee una vez en `Register` mediante `messageName[T]()`, que para tipos puntero llama a `Name()` sobre `new(Elem)` en vez de sobre `nil`. `Bus.names` garantiza un alias único por tipo; `Dispatch` nunca resuelve por nombre.
+- **Alias (`NamedMessage`)**: se lee una vez en `Register` mediante `messageName[T]()`, que para tipos puntero llama a `Name()` sobre `new(Elem)` en vez de sobre `nil` y convierte un pánico de `Name()` en `ErrNamePanic`. `Bus.names` garantiza un alias único por tipo; `Dispatch` nunca resuelve por nombre.
 - **Concurrencia**: `RWMutex` sobre `routes`/`names`. `Register` hace copy-on-write (`append(slices.Clip(current), h)`) para que un dispatch en curso conserve su slice. El contrato sigue siendo "registrar antes de despachar".
 
 ## Errores

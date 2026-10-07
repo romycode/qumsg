@@ -106,7 +106,7 @@ El alias queda asociado al tipo durante el registro y cumple estas reglas:
 - Registrar otro tipo con el mismo alias devuelve un error y no añade el handler.
 - Un tipo que no implementa `NamedMessage` no necesita un alias.
 
-Define `Name()` con receptor por valor y sin depender de campos inicializados, como en el ejemplo.
+Define `Name()` sin depender de campos inicializados, como en el ejemplo: `Register` lo llama sobre el valor cero del tipo (o un puntero a él). Si `Name()` entra en pánico, `Register` lo recupera y devuelve `ErrNamePanic` sin añadir el handler.
 
 El alias puede utilizarse en logs y otras herramientas de identificación. `Dispatch` sigue resolviendo por tipo: esta versión no expone un dispatch por nombre ni convierte mensajes entre tipos.
 
@@ -257,6 +257,7 @@ Los errores de un handler se devuelven sin envolver. Los errores propios del bus
 | `ErrNilHandler` | `Register` con un handler `nil`. |
 | `ErrInterfaceType` | `Register` con `T` interfaz: nunca coincidiría con el tipo concreto de un mensaje. |
 | `ErrEmptyName` | `Name()` devuelve una cadena vacía. |
+| `ErrNamePanic` | `Name()` entra en pánico sobre el valor cero, normalmente porque depende de campos. |
 | `ErrDuplicateName` | Otro tipo ya usa ese alias en el bus. |
 
 `New` entra en pánico si recibe un middleware `nil`, porque es un error de programación detectado al configurar.
