@@ -32,7 +32,7 @@ Crea el bus, registra el handler y despacha el mensaje:
 func run(ctx context.Context) error {
     bus := qumsg.New()
 
-    if err := qumsg.Register(bus, welcomeUser); err != nil {
+    if err := bus.Register(welcomeUser); err != nil {
         return err
     }
 
@@ -137,7 +137,7 @@ func (s *WelcomeService) Handle(
 
 // Durante la configuración:
 service := &WelcomeService{}
-err := qumsg.Register(bus, service.Handle)
+err := bus.Register(service.Handle)
 ```
 
 El handler recibe el mensaje tipado y devuelve `nil` si termina correctamente, o un error si falla. En esta versión no devuelve un resultado de negocio a través del bus.
@@ -145,11 +145,11 @@ El handler recibe el mensaje tipado y devuelve `nil` si termina correctamente, o
 ### Varios handlers
 
 ```go
-if err := qumsg.Register(bus, welcomeUser); err != nil {
+if err := bus.Register(welcomeUser); err != nil {
     return err
 }
 
-if err := qumsg.Register(bus, auditUserCreated); err != nil {
+if err := bus.Register(auditUserCreated); err != nil {
     return err
 }
 ```
@@ -232,11 +232,11 @@ Un middleware habitual llama a `next` exactamente una vez. Llamarlo varias veces
 | Operación | Responsabilidad |
 | --- | --- |
 | `New(middlewares ...Middleware) *Bus` | Crea un bus con su cadena de middleware. |
-| `Register[T any](bus *Bus, handler func(context.Context, T) error) error` | Registra un handler para el tipo exacto `T` y valida su alias opcional. |
+| `(*Bus).Register[T any](handler func(context.Context, T) error) error` | Registra un handler para el tipo exacto `T` y valida su alias opcional. |
 | `(*Bus).Dispatch(ctx context.Context, message any) error` | Ejecuta el middleware y los handlers correspondientes. |
 | `NamedMessage.Name() string` | Proporciona un alias opcional, constante y único por tipo dentro del bus. |
 
-`Register` es una función del paquete con un parámetro de tipo; el bus puede contener handlers para distintos tipos de mensajes.
+`Register` es un método genérico (Go 1.27+): `T` se infiere del handler, así que basta con `bus.Register(welcomeUser)`. El bus guarda los handlers de cada tipo ya tipados, de modo que un dispatch convierte el mensaje a `T` una sola vez y no por cada handler. `Dispatch` recibe `any` a propósito: resuelve por el tipo dinámico del mensaje y comparte la firma con el middleware.
 
 ## Errores y contexto
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 )
 
@@ -50,16 +51,38 @@ type Middleware func(next HandleFunc) HandleFunc
 type Bus struct {
 	dispatch HandleFunc
 
-	mu       sync.RWMutex
-	handlers map[reflect.Type][]HandleFunc
-	names    map[string]reflect.Type
+	mu     sync.RWMutex
+	routes map[reflect.Type]route
+	names  map[string]reflect.Type
+}
+
+// route runs the handlers registered for one message type.
+type route interface {
+	handle(ctx context.Context, message any) error
+}
+
+// handlers keeps the handlers of type T typed, so a dispatch asserts the
+// message once instead of once per handler.
+type handlers[T any] []func(context.Context, T) error
+
+func (hs handlers[T]) handle(ctx context.Context, message any) error {
+	msg := message.(T)
+	for _, h := range hs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := h(ctx, msg); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // New creates a bus. The first middleware is the outermost one.
 func New(middlewares ...Middleware) *Bus {
 	b := &Bus{
-		handlers: make(map[reflect.Type][]HandleFunc),
-		names:    make(map[string]reflect.Type),
+		routes: make(map[reflect.Type]route),
+		names:  make(map[string]reflect.Type),
 	}
 
 	next := b.handle
@@ -76,7 +99,7 @@ func New(middlewares ...Middleware) *Bus {
 
 // Register adds a handler for messages of the exact type T. Handlers for the
 // same type run in registration order.
-func Register[T any](bus *Bus, handler func(context.Context, T) error) error {
+func (b *Bus) Register[T any](handler func(context.Context, T) error) error {
 	if handler == nil {
 		return ErrNilHandler
 	}
@@ -86,24 +109,24 @@ func Register[T any](bus *Bus, handler func(context.Context, T) error) error {
 		return fmt.Errorf("%w: %s", ErrInterfaceType, typ)
 	}
 
-	name, named := messageName[T](typ)
+	name, named := messageName[T]()
 	if named && name == "" {
 		return fmt.Errorf("%w: %s", ErrEmptyName, typ)
 	}
 
-	bus.mu.Lock()
-	defer bus.mu.Unlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	if named {
-		if other, ok := bus.names[name]; ok && other != typ {
+		if other, ok := b.names[name]; ok && other != typ {
 			return fmt.Errorf("%w: %q is used by %s, cannot register %s", ErrDuplicateName, name, other, typ)
 		}
-		bus.names[name] = typ
+		b.names[name] = typ
 	}
 
-	bus.handlers[typ] = append(bus.handlers[typ], func(ctx context.Context, message any) error {
-		return handler(ctx, message.(T))
-	})
+	// Copy on write: a dispatch that already read the route keeps its slice.
+	current, _ := b.routes[typ].(handlers[T])
+	b.routes[typ] = append(slices.Clip(current), handler)
 
 	return nil
 }
@@ -121,31 +144,22 @@ func (b *Bus) handle(ctx context.Context, message any) error {
 	}
 
 	b.mu.RLock()
-	handlers := b.handlers[reflect.TypeOf(message)]
+	r, ok := b.routes[reflect.TypeOf(message)]
 	b.mu.RUnlock()
 
-	if len(handlers) == 0 {
+	if !ok {
 		return fmt.Errorf("%w: %T", ErrNoHandler, message)
 	}
 
-	for _, h := range handlers {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := h(ctx, message); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return r.handle(ctx, message)
 }
 
 // messageName returns the alias of T if it implements NamedMessage. For
 // pointer types it calls Name on a pointer to a zero value instead of a nil
 // pointer, so value-receiver methods do not panic.
-func messageName[T any](typ reflect.Type) (string, bool) {
+func messageName[T any]() (string, bool) {
 	var sample T
-	if typ.Kind() == reflect.Pointer {
+	if typ := reflect.TypeFor[T](); typ.Kind() == reflect.Pointer {
 		sample = reflect.New(typ.Elem()).Interface().(T)
 	}
 

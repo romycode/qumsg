@@ -200,21 +200,21 @@ func TestCancellationIsCheckedBetweenHandlers(t *testing.T) {
 
 func TestRegisterValidation(t *testing.T) {
 	t.Run("nil handler", func(t *testing.T) {
-		err := qumsg.Register[productCreated](qumsg.New(), nil)
+		err := qumsg.New().Register[productCreated](nil)
 		if !errors.Is(err, qumsg.ErrNilHandler) {
 			t.Fatalf("got %v", err)
 		}
 	})
 
 	t.Run("interface type", func(t *testing.T) {
-		err := qumsg.Register(qumsg.New(), func(context.Context, qumsg.NamedMessage) error { return nil })
+		err := qumsg.New().Register(func(context.Context, qumsg.NamedMessage) error { return nil })
 		if !errors.Is(err, qumsg.ErrInterfaceType) {
 			t.Fatalf("got %v", err)
 		}
 	})
 
 	t.Run("empty name", func(t *testing.T) {
-		err := qumsg.Register(qumsg.New(), func(context.Context, emptyName) error { return nil })
+		err := qumsg.New().Register(func(context.Context, emptyName) error { return nil })
 		if !errors.Is(err, qumsg.ErrEmptyName) {
 			t.Fatalf("got %v", err)
 		}
@@ -230,7 +230,7 @@ func TestRegisterValidation(t *testing.T) {
 		bus := qumsg.New()
 		mustRegister(t, bus, func(context.Context, userCreated) error { return nil })
 
-		err := qumsg.Register(bus, func(context.Context, sameName) error { return nil })
+		err := bus.Register(func(context.Context, sameName) error { return nil })
 		if !errors.Is(err, qumsg.ErrDuplicateName) {
 			t.Fatalf("got %v", err)
 		}
@@ -244,7 +244,7 @@ func TestRegisterValidation(t *testing.T) {
 		mustRegister(t, bus, func(context.Context, userCreated) error { return nil })
 
 		// *userCreated inherits Name; reading it must not dereference nil.
-		err := qumsg.Register(bus, func(context.Context, *userCreated) error { return nil })
+		err := bus.Register(func(context.Context, *userCreated) error { return nil })
 		if !errors.Is(err, qumsg.ErrDuplicateName) {
 			t.Fatalf("got %v", err)
 		}
@@ -285,7 +285,7 @@ func TestConcurrentDispatches(t *testing.T) {
 
 func mustRegister[T any](t *testing.T, bus *qumsg.Bus, handler func(context.Context, T) error) {
 	t.Helper()
-	if err := qumsg.Register(bus, handler); err != nil {
+	if err := bus.Register(handler); err != nil {
 		t.Fatal(err)
 	}
 }
