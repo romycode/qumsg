@@ -277,4 +277,4 @@ Los handlers y los middleware son responsables de sincronizar el estado comparti
 go test -race ./...
 ```
 
-Los tests cubren la resolución por tipo exacto, el orden de handlers y middleware, la parada en el primer error, los alias y sus colisiones, la propagación del contexto y la cancelación, la conservación de errores y los dispatches concurrentes.
+Los ejemplos de este README están en `example_test.go` como funciones `Example` y se verifican con `go test`. Los tests unitarios de `bus_test.go` cubren la resolución por tipo exacto, el orden de handlers y middleware, la parada en el primer error, los alias y sus colisiones, la propagación del contexto y la cancelación, la conservación de errores y los dispatches concurrentes.

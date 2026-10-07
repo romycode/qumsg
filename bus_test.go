@@ -25,6 +25,14 @@ type emptyName struct{}
 
 func (emptyName) Name() string { return "" }
 
+type pointerNamed struct{}
+
+func (*pointerNamed) Name() string { return "pointer.named" }
+
+type samePointerName struct{}
+
+func (samePointerName) Name() string { return "pointer.named" }
+
 type ctxKey struct{}
 
 type customErr struct{ msg string }
@@ -198,6 +206,24 @@ func TestCancellationIsCheckedBetweenHandlers(t *testing.T) {
 	}
 }
 
+func TestCanceledContextRunsNoHandler(t *testing.T) {
+	bus := qumsg.New()
+	called := false
+	mustRegister(t, bus, func(context.Context, productCreated) error {
+		called = true
+		return nil
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if err := bus.Dispatch(ctx, productCreated{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("handler ran with a canceled context")
+	}
+}
+
 func TestRegisterValidation(t *testing.T) {
 	t.Run("nil handler", func(t *testing.T) {
 		err := qumsg.New().Register[productCreated](nil)
@@ -249,6 +275,36 @@ func TestRegisterValidation(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+}
+
+func TestPointerTypeRegistersItsAlias(t *testing.T) {
+	bus := qumsg.New()
+	mustRegister(t, bus, func(context.Context, *pointerNamed) error { return nil })
+
+	err := bus.Register(func(context.Context, samePointerName) error { return nil })
+	if !errors.Is(err, qumsg.ErrDuplicateName) {
+		t.Fatalf("got %v, want ErrDuplicateName", err)
+	}
+}
+
+func TestRegisterDuringDispatchesIsRaceFree(t *testing.T) {
+	bus := qumsg.New()
+	mustRegister(t, bus, func(context.Context, productCreated) error { return nil })
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Go(func() {
+			if err := bus.Dispatch(t.Context(), productCreated{}); err != nil {
+				t.Error(err)
+			}
+		})
+		wg.Go(func() {
+			if err := bus.Register(func(context.Context, productCreated) error { return nil }); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func TestConcurrentDispatches(t *testing.T) {

@@ -21,7 +21,11 @@ gofmt -l *.go
 
 ## Arquitectura
 
-Todo está en `bus.go`; los tests (paquete externo `qumsg_test`) en `bus_test.go`.
+Todo está en `bus.go`. Los tests usan el paquete externo `qumsg_test`, así que solo ven la API pública:
+
+- `bus_test.go`: unitarios.
+- `example_test.go`: aceptación. Cada `Example` reproduce una sección del README con su `// Output:`; si cambias un ejemplo del README o el comportamiento que describe, actualiza ambos. Fija la salida de lo que no sea determinista (p. ej. `time` y `duration` del logger).
+- Integración: no hay, porque el paquete no tiene dependencias externas. Si se añade un transporte, sus tests irán tras un build tag `integration`.
 
 - **Resolución por tipo exacto**: `Bus.routes` es `map[reflect.Type]route`. `Register[T]` usa `reflect.TypeFor[T]()` y `Dispatch` usa `reflect.TypeOf(message)`, así que `T` y `*T` son rutas distintas y no hay búsqueda por interfaces (por eso `Register` rechaza `T` interfaz).
 - **Handlers tipados**: cada ruta es un `handlers[T]` (`[]func(context.Context, T) error`) que implementa la interfaz interna `route`. La aserción `message.(T)` se hace una vez por dispatch. Los handlers corren en orden de registro, se comprueba `ctx.Err()` antes de cada uno y el primer error corta la ejecución.
