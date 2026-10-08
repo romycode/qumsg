@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"sync"
 	"testing"
@@ -61,7 +62,7 @@ func newTransport(t testing.TB, opts ...valkey.Option) (*valkey.Transport, vk.Cl
 
 func mustSend(t *testing.T, tr *valkey.Transport, msg any) {
 	t.Helper()
-	if err := tr.Send(t.Context(), msg); err != nil {
+	if err := tr.Send(t.Context(), qumsg.NewEnvelope(msg)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -98,8 +99,8 @@ func TestSendAndReceive(t *testing.T) {
 	mustSend(t, tr, want)
 
 	d := mustReceive(t, tr)
-	if d.Message() != want || d.Attempt() != 1 {
-		t.Fatalf("got (%#v, attempt %d), want (%#v, attempt 1)", d.Message(), d.Attempt(), want)
+	if d.Envelope().Message() != want || d.Attempt() != 1 {
+		t.Fatalf("got (%#v, attempt %d), want (%#v, attempt 1)", d.Envelope().Message(), d.Attempt(), want)
 	}
 	if n := pendingCount(t, client, stream); n != 1 {
 		t.Fatalf("pending before Ack: %d, want 1", n)
@@ -121,7 +122,7 @@ func TestPointerMessages(t *testing.T) {
 
 	mustSend(t, tr, &renamed{ID: "1"})
 
-	got, ok := mustReceive(t, tr).Message().(*renamed)
+	got, ok := mustReceive(t, tr).Envelope().Message().(*renamed)
 	if !ok || got.ID != "1" {
 		t.Fatalf("got %#v", got)
 	}
@@ -143,8 +144,8 @@ func TestNackRedeliversWithNextAttempt(t *testing.T) {
 	}
 
 	d := mustReceive(t, tr)
-	if d.Message() != (userCreated{ID: "1"}) || d.Attempt() != 2 {
-		t.Fatalf("got (%#v, attempt %d), want attempt 2", d.Message(), d.Attempt())
+	if d.Envelope().Message() != (userCreated{ID: "1"}) || d.Attempt() != 2 {
+		t.Fatalf("got (%#v, attempt %d), want attempt 2", d.Envelope().Message(), d.Attempt())
 	}
 }
 
@@ -168,8 +169,8 @@ func TestClaimsMessagesOfAStoppedConsumer(t *testing.T) {
 	mustReceive(t, stopped) // never settled, as if the process died
 
 	d := mustReceive(t, alive)
-	if d.Message() != (userCreated{ID: "1"}) || d.Attempt() != 2 {
-		t.Fatalf("got (%#v, attempt %d), want the claimed message at attempt 2", d.Message(), d.Attempt())
+	if d.Envelope().Message() != (userCreated{ID: "1"}) || d.Attempt() != 2 {
+		t.Fatalf("got (%#v, attempt %d), want the claimed message at attempt 2", d.Envelope().Message(), d.Attempt())
 	}
 }
 
@@ -187,7 +188,7 @@ func TestConsumersShareTheGroup(t *testing.T) {
 	mustSend(t, a, userCreated{ID: "1"})
 	mustSend(t, a, userCreated{ID: "2"})
 
-	first, second := mustReceive(t, a).Message(), mustReceive(t, b).Message()
+	first, second := mustReceive(t, a).Envelope().Message(), mustReceive(t, b).Envelope().Message()
 	if first == second {
 		t.Fatalf("both consumers got %#v", first)
 	}
@@ -199,7 +200,7 @@ func TestUndecodableMessages(t *testing.T) {
 	t.Run("unknown name", func(t *testing.T) {
 		mustSend(t, tr, unregistered{})
 
-		msg, ok := mustReceive(t, tr).Message().(valkey.UndecodableMessage)
+		msg, ok := mustReceive(t, tr).Envelope().Message().(valkey.UndecodableMessage)
 		if !ok || msg.Name != "unregistered" || msg.Err == nil {
 			t.Fatalf("got %#v", msg)
 		}
@@ -215,11 +216,51 @@ func TestUndecodableMessages(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		msg, ok := mustReceive(t, tr).Message().(valkey.UndecodableMessage)
+		msg, ok := mustReceive(t, tr).Envelope().Message().(valkey.UndecodableMessage)
 		if !ok || string(msg.Payload) != "{not json" || msg.Err == nil {
 			t.Fatalf("got %#v", msg)
 		}
 	})
+}
+
+func TestMetadataSurvivesRetries(t *testing.T) {
+	tr, _, _ := newTransport(t)
+	e := qumsg.NewEnvelope(userCreated{ID: "1"}).With("request_id", "req-1").With("actor", "user-7")
+	if err := tr.Send(t.Context(), e); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{"request_id": "req-1", "actor": "user-7"}
+	d := mustReceive(t, tr)
+	if got := maps.Collect(d.Envelope().Metadata()); !maps.Equal(got, want) {
+		t.Fatalf("got metadata %v, want %v", got, want)
+	}
+	if err := d.Nack(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	d = mustReceive(t, tr)
+	if got := maps.Collect(d.Envelope().Metadata()); d.Attempt() != 2 || !maps.Equal(got, want) {
+		t.Fatalf("retry: got metadata %v at attempt %d, want %v at attempt 2", got, d.Attempt(), want)
+	}
+}
+
+func TestInvalidMetadataIsUndecodable(t *testing.T) {
+	tr, client, stream := newTransport(t)
+	cmd := client.B().Xadd().Key(stream).Id("*").FieldValue().
+		FieldValue("name", "users.created").
+		FieldValue("payload", `{"ID":"1"}`).
+		FieldValue("attempt", "1").
+		FieldValue("metadata", "{not json").
+		Build()
+	if err := client.Do(t.Context(), cmd).Error(); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, ok := mustReceive(t, tr).Envelope().Message().(valkey.UndecodableMessage)
+	if !ok || msg.Name != "users.created" || msg.Err == nil {
+		t.Fatalf("got %#v", msg)
+	}
 }
 
 type unregistered struct{}
@@ -395,7 +436,7 @@ func TestCodecAndGroupOptions(t *testing.T) {
 	tr, client, stream := newTransport(t, valkey.WithCodec(codec), valkey.WithGroup("mailers"))
 
 	mustSend(t, tr, userCreated{ID: "1"})
-	if got := mustReceive(t, tr).Message(); got != (userCreated{ID: "1"}) {
+	if got := mustReceive(t, tr).Envelope().Message(); got != (userCreated{ID: "1"}) {
 		t.Fatalf("got %#v", got)
 	}
 	if codec.marshal != 1 || codec.unmarshal != 1 {
@@ -412,7 +453,7 @@ func TestCodecAndGroupOptions(t *testing.T) {
 	}
 
 	codec.fail = true
-	if err := tr.Send(t.Context(), userCreated{}); err == nil {
+	if err := tr.Send(t.Context(), qumsg.NewEnvelope(userCreated{})); err == nil {
 		t.Fatal("Send did not return the encoding error")
 	}
 }
@@ -431,7 +472,7 @@ func TestValkeyErrorsAreReturned(t *testing.T) {
 		tr, client, stream := newTransport(t)
 		breakStream(t, client, stream)
 
-		if err := tr.Send(t.Context(), userCreated{}); err == nil {
+		if err := tr.Send(t.Context(), qumsg.NewEnvelope(userCreated{})); err == nil {
 			t.Fatal("Send: want WRONGTYPE error")
 		}
 		if _, err := tr.Receive(t.Context()); err == nil {

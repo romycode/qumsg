@@ -14,6 +14,7 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 - Metadatos de mensaje: `Envelope` envuelve un mensaje con pares clave-valor de tipo string (`NewEnvelope`, `With`, `Get`, `Metadata`) que viajan por el transporte.
 - `Propagator` y la opción `WithPropagators`: `Route` y `RouteTypes` copian valores del contexto al sobre y `Consume` los devuelve al contexto del worker antes de despachar. `ContextValue` propaga un string guardado en el contexto.
+- El transporte de Valkey guarda los metadatos del sobre en el campo `metadata` de la entrada, como objeto JSON, y los conserva en los reintentos. Las entradas sin ese campo se leen sin metadatos.
 
 ## [0.4.0] - 2026-10-08
 

@@ -9,7 +9,8 @@
 // Messages are identified on the wire by their qumsg.NamedMessage alias, not
 // by their Go type, so types can be renamed or moved without breaking queued
 // messages. The consumer side declares the types it can decode with
-// Transport.Register.
+// Transport.Register. The metadata of the qumsg.Envelope travel as a JSON
+// object, independent of the payload codec.
 package valkey
 
 import (
@@ -19,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"strconv"
@@ -32,9 +34,10 @@ import (
 
 // Fields of a stream entry.
 const (
-	fieldName    = "name"
-	fieldPayload = "payload"
-	fieldAttempt = "attempt"
+	fieldName     = "name"
+	fieldPayload  = "payload"
+	fieldAttempt  = "attempt"
+	fieldMetadata = "metadata"
 )
 
 // ErrUnnamedMessage is returned by Send and Register when the message type
@@ -229,12 +232,14 @@ func nameOf(named qumsg.NamedMessage) (name string, err error) {
 	return name, nil
 }
 
-// Send appends message to the stream. The message type must implement
-// qumsg.NamedMessage; it does not need to be registered.
-func (t *Transport) Send(ctx context.Context, message any) error {
+// Send appends the message of the envelope and its metadata to the stream.
+// The message type must implement qumsg.NamedMessage; it does not need to be
+// registered.
+func (t *Transport) Send(ctx context.Context, e qumsg.Envelope) error {
 	if t.closed.Load() {
 		return qumsg.ErrTransportClosed
 	}
+	message := e.Message()
 	if message == nil {
 		return qumsg.ErrNilMessage
 	}
@@ -253,10 +258,41 @@ func (t *Transport) Send(ctx context.Context, message any) error {
 		return fmt.Errorf("valkey: encode %s: %w", name, err)
 	}
 
-	return t.client.Do(ctx, t.xadd(name, string(payload), 1)).Error()
+	metadata, err := encodeMetadata(e)
+	if err != nil {
+		return fmt.Errorf("valkey: encode metadata of %s: %w", name, err)
+	}
+
+	return t.client.Do(ctx, t.xadd(name, string(payload), metadata, 1)).Error()
 }
 
-func (t *Transport) xadd(name, payload string, attempt int) vk.Completed {
+// encodeMetadata returns the metadata of e as a JSON object, or "" if there
+// are none.
+func encodeMetadata(e qumsg.Envelope) (string, error) {
+	metadata := maps.Collect(e.Metadata())
+	if len(metadata) == 0 {
+		return "", nil
+	}
+	data, err := json.Marshal(metadata)
+	return string(data), err
+}
+
+// decodeMetadata adds the metadata encoded by encodeMetadata to e.
+func decodeMetadata(e qumsg.Envelope, data string) (qumsg.Envelope, error) {
+	if data == "" {
+		return e, nil
+	}
+	var metadata map[string]string
+	if err := json.Unmarshal([]byte(data), &metadata); err != nil {
+		return e, err
+	}
+	for key, value := range metadata {
+		e = e.With(key, value)
+	}
+	return e, nil
+}
+
+func (t *Transport) xadd(name, payload, metadata string, attempt int) vk.Completed {
 	// valkey-go does not export the intermediate builder types, so both
 	// branches build the whole command.
 	key := t.client.B().Xadd().Key(t.stream)
@@ -266,12 +302,14 @@ func (t *Transport) xadd(name, payload string, attempt int) vk.Completed {
 			FieldValue(fieldName, name).
 			FieldValue(fieldPayload, payload).
 			FieldValue(fieldAttempt, attemptStr).
+			FieldValue(fieldMetadata, metadata).
 			Build()
 	}
 	return key.Id("*").FieldValue().
 		FieldValue(fieldName, name).
 		FieldValue(fieldPayload, payload).
 		FieldValue(fieldAttempt, attemptStr).
+		FieldValue(fieldMetadata, metadata).
 		Build()
 }
 
@@ -403,6 +441,7 @@ func (t *Transport) read(ctx context.Context) (qumsg.Delivery, error) {
 func (t *Transport) delivery(entry vk.XRangeEntry, extra int) *delivery {
 	name := entry.FieldValues[fieldName]
 	payload := []byte(entry.FieldValues[fieldPayload])
+	metadata := entry.FieldValues[fieldMetadata]
 
 	attempt, err := strconv.Atoi(entry.FieldValues[fieldAttempt])
 	if err != nil || attempt < 1 {
@@ -414,6 +453,7 @@ func (t *Transport) delivery(entry vk.XRangeEntry, extra int) *delivery {
 		id:        entry.ID,
 		name:      name,
 		payload:   payload,
+		metadata:  metadata,
 		attempt:   attempt + extra,
 	}
 
@@ -421,19 +461,23 @@ func (t *Transport) delivery(entry vk.XRangeEntry, extra int) *delivery {
 	decode, ok := t.decoders[name]
 	t.mu.RUnlock()
 
-	if !ok {
-		d.message = UndecodableMessage{ID: entry.ID, Name: name, Payload: payload,
-			Err: fmt.Errorf("valkey: no type registered for %q", name)}
+	undecodable := func(err error) *delivery {
+		d.envelope = qumsg.NewEnvelope(UndecodableMessage{ID: entry.ID, Name: name, Payload: payload, Err: err})
 		return d
+	}
+	if !ok {
+		return undecodable(fmt.Errorf("valkey: no type registered for %q", name))
 	}
 
 	msg, err := decode(t.codec, payload)
 	if err != nil {
-		d.message = UndecodableMessage{ID: entry.ID, Name: name, Payload: payload,
-			Err: fmt.Errorf("valkey: decode %s: %w", name, err)}
-		return d
+		return undecodable(fmt.Errorf("valkey: decode %s: %w", name, err))
 	}
-	d.message = msg
+	e, err := decodeMetadata(qumsg.NewEnvelope(msg), metadata)
+	if err != nil {
+		return undecodable(fmt.Errorf("valkey: decode metadata of %s: %w", name, err))
+	}
+	d.envelope = e
 	return d
 }
 
@@ -450,12 +494,13 @@ type delivery struct {
 	id        string
 	name      string
 	payload   []byte
-	message   any
+	metadata  string
+	envelope  qumsg.Envelope
 	attempt   int
 	settled   atomic.Bool
 }
 
-func (d *delivery) Message() any { return d.message }
+func (d *delivery) Envelope() qumsg.Envelope { return d.envelope }
 
 func (d *delivery) Attempt() int { return d.attempt }
 
@@ -472,8 +517,8 @@ func (d *delivery) Ack(ctx context.Context) error {
 	return nil
 }
 
-// Nack appends the message again with the next attempt number and then
-// acknowledges the original entry. The retry is delivered immediately. If
+// Nack appends the message again, with its metadata and the next attempt
+// number, and then acknowledges the original entry. The retry is delivered immediately. If
 // the process stops between both commands, the message is delivered twice.
 func (d *delivery) Nack(ctx context.Context) error {
 	if !d.settled.CompareAndSwap(false, true) {
@@ -481,7 +526,7 @@ func (d *delivery) Nack(ctx context.Context) error {
 	}
 	t := d.transport
 
-	if err := t.client.Do(ctx, t.xadd(d.name, string(d.payload), d.attempt+1)).Error(); err != nil {
+	if err := t.client.Do(ctx, t.xadd(d.name, string(d.payload), d.metadata, d.attempt+1)).Error(); err != nil {
 		return fmt.Errorf("valkey: retry %s: %w", d.id, err)
 	}
 	cmd := t.client.B().Xack().Key(t.stream).Group(t.group).Id(d.id).Build()

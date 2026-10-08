@@ -94,7 +94,7 @@ func TestSendValidation(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := newOffline().Send(ctx, tc.message); !errors.Is(err, tc.want) {
+			if err := newOffline().Send(ctx, qumsg.NewEnvelope(tc.message)); !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})
@@ -106,7 +106,7 @@ func TestClosedTransport(t *testing.T) {
 	if err := tr.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := tr.Send(t.Context(), userCreated{}); !errors.Is(err, qumsg.ErrTransportClosed) {
+	if err := tr.Send(t.Context(), qumsg.NewEnvelope(userCreated{})); !errors.Is(err, qumsg.ErrTransportClosed) {
 		t.Fatalf("Send: got %v", err)
 	}
 	if _, err := tr.Receive(t.Context()); !errors.Is(err, qumsg.ErrTransportClosed) {
