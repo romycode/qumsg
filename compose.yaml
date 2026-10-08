@@ -1,4 +1,17 @@
 services:
+  # Valkey for the integration tests of the valkey module:
+  #   docker compose up -d --wait valkey
+  #   go test -race -tags integration ./valkey/...
+  valkey:
+    image: valkey/valkey:8
+    ports:
+      - "${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
   # Benchmarks with limited resources, closer to a production container than a
   # developer machine. Go >= 1.25 sets GOMAXPROCS from the CPU limit.
   #   docker compose run --rm bench

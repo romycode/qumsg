@@ -59,8 +59,7 @@ Los ejemplos utilizan paquetes estándar como `context`, `fmt`, `log/slog` y `ti
 - Propagación de `context.Context`.
 - Ejecución asíncrona opcional: rutas hacia un transporte, consumo con workers, reintentos y apagado ordenado.
 - Un transporte en memoria (`qumsg/memory`).
-
-No incluye todavía transportes externos, persistencia ni serialización. Tampoco incorpora un envelope o un sistema de stamps: los handlers de un mismo dispatch se siguen ejecutando secuencialmente.
+- Un transporte sobre Valkey Streams en el módulo [`qumsg/valkey`](valkey/README.md), con persistencia, varios procesos y serialización JSON. Tampoco incorpora un envelope o un sistema de stamps: los handlers de un mismo dispatch se siguen ejecutando secuencialmente.
 
 ## Mensajes e identidad
 
@@ -332,6 +331,14 @@ defer transport.Close()
 
 Los mensajes viven solo en memoria y se pierden si el proceso termina. Úsalo para desarrollo, tests o trabajo que se pueda perder.
 
+### Transportes externos
+
+| Transporte | Módulo | Documentación |
+| --- | --- | --- |
+| Valkey Streams | `github.com/romycode/qumsg/valkey` | [valkey/README.md](valkey/README.md) |
+
+Cada transporte externo es un módulo Go aparte, para que el núcleo no dependa de sus clientes.
+
 ## API
 
 | Operación | Responsabilidad |
@@ -386,7 +393,13 @@ Los handlers y los middleware son responsables de sincronizar el estado comparti
 ## Desarrollo
 
 ```sh
-go test -race ./...
+go test -race ./... ./valkey/...
+
+# Tests de integración del transporte de Valkey
+docker compose up -d --wait valkey
+go test -race -tags integration ./valkey/...
 ```
+
+El repositorio es un workspace de Go (`go.work`) con dos módulos: el núcleo en la raíz y `valkey/`. Desde la raíz, `./...` solo incluye el núcleo, así que el módulo de Valkey se indica aparte.
 
 Los ejemplos de este README están en `example_test.go` como funciones `Example` y se verifican con `go test`. Los tests unitarios de `bus_test.go`, `transport_test.go` y `memory/memory_test.go` cubren la resolución por tipo exacto, el orden de handlers y middleware, la parada en el primer error, los alias y sus colisiones, la propagación del contexto y la cancelación, la conservación de errores, los dispatches concurrentes, el consumo con reintentos, fallos, varios workers y apagado ordenado, y el transporte en memoria. Los tests con tiempo o bloqueos usan `testing/synctest`, así que son deterministas.

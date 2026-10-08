@@ -6,6 +6,12 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Añadido
+
+- Módulo `github.com/romycode/qumsg/valkey` con un transporte sobre Valkey Streams: grupo de consumidores compartido entre procesos, `Register[T]` para declarar los tipos que se pueden decodificar, el alias `Name()` como identificador del mensaje en el stream, codec JSON intercambiable, reintentos con el número de intento en el propio mensaje, recuperación con `XAUTOCLAIM` de los mensajes de consumidores caídos, `UndecodableMessage` para nombres desconocidos o payloads inválidos y recorte opcional del stream.
+- Servicio `valkey` en `compose.yaml` para los tests de integración (`go test -tags integration ./valkey/...`).
+- Workspace de Go (`go.work`) con el núcleo y el módulo de Valkey.
+
 ## [0.2.0] - 2026-10-08
 
 Ejecución asíncrona mediante transportes y un primer transporte en memoria.
