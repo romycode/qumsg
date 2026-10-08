@@ -1,0 +1,26 @@
+# Changelog
+
+Todos los cambios relevantes de este proyecto se documentan en este archivo.
+
+El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/lang/es/). Mientras la versión sea `0.x`, una versión menor puede incluir cambios incompatibles en la API.
+
+## [Sin publicar]
+
+## [0.1.0] - 2026-10-08
+
+Primera versión: bus de mensajes síncrono en proceso. Requiere Go 1.27+.
+
+### Añadido
+
+- `New(middlewares ...Middleware) *Bus` para crear un bus con su cadena de middleware. El primer middleware es el más externo y la cadena envuelve el dispatch completo, no cada handler.
+- `(*Bus).Register[T](handler)` para registrar handlers tipados `func(context.Context, T) error`. `T` se infiere del handler y se admiten funciones, closures y métodos enlazados.
+- `(*Bus).Dispatch(ctx, message)` con resolución por tipo exacto: `T` y `*T` son tipos distintos y no se buscan handlers por interfaces.
+- Varios handlers por tipo, ejecutados en orden de registro y con parada en el primer error, que se devuelve sin envolver.
+- Propagación de `context.Context` desde `Dispatch` hasta los handlers, pasando por el middleware, y comprobación de cancelación antes de cada handler.
+- `NamedMessage` para dar a un tipo un alias opcional, único por bus y validado al registrar.
+- Errores exportados, comparables con `errors.Is`: `ErrNoHandler`, `ErrNilMessage`, `ErrNilHandler`, `ErrInterfaceType`, `ErrEmptyName`, `ErrNamePanic` y `ErrDuplicateName`.
+- Uso concurrente seguro una vez configurado, sin asignaciones de memoria en el camino de dispatch.
+- Ejemplos del README verificados como tests (`example_test.go`) y benchmarks ejecutables en un contenedor con recursos limitados (`docker compose run --rm bench`).
+
+[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/romycode/qumsg/releases/tag/v0.1.0

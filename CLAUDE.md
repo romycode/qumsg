@@ -54,6 +54,8 @@ refactor!: make Register a generic method
 BREAKING CHANGE: qumsg.Register(bus, h) is now bus.Register(h).
 ```
 
+Cada versión se etiqueta como `vX.Y.Z` (etiqueta anotada) y se documenta en `CHANGELOG.md` (formato Keep a Changelog). Los cambios que aún no tienen versión van en `[Sin publicar]`.
+
 El remoto `origin` usa SSH y la clave tiene passphrase, así que el push desde Claude Code falla. Usa HTTPS con las credenciales de `gh` solo para esa operación:
 
 ```sh

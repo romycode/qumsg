@@ -4,7 +4,7 @@ Bus de mensajes síncrono para Go, inspirado en Symfony Messenger. Permite despa
 
 La aplicación crea un mensaje, lo entrega al bus y espera a que terminen sus handlers. El bus centraliza la selección de handlers y las operaciones transversales, mientras que cada handler contiene la lógica de la aplicación.
 
-> **Estado:** primera versión, sin publicar todavía. Requiere Go 1.27+.
+> **Estado:** `v0.1.0`, primera versión. Requiere Go 1.27+. Mientras la versión sea `0.x` la API puede cambiar; consulta el [CHANGELOG](CHANGELOG.md).
 
 ```sh
 go get github.com/romycode/qumsg
