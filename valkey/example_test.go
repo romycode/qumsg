@@ -38,16 +38,20 @@ func Example() {
 	const stream = "qumsg-example:emails"
 	defer client.Do(context.Background(), client.B().Del().Key(stream).Build())
 
+	// The routes, shared by both processes.
+	routes := func(t qumsg.Transport) *qumsg.Router {
+		router := qumsg.NewRouter()
+		_ = router.Route[SendWelcomeEmail](t)
+		return router
+	}
+
 	// Producer process.
-	producer := qumsg.New()
-	_ = producer.Route[SendWelcomeEmail](valkey.New(client, stream))
+	producer := qumsg.New(qumsg.WithRouter(routes(valkey.New(client, stream))))
 	_ = producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 
-	// Worker process.
+	// Worker process: Consume tells the transport which types it receives.
 	transport := valkey.New(client, stream)
-	_ = transport.Register[SendWelcomeEmail]()
-
-	worker := qumsg.New()
+	worker := qumsg.New(qumsg.WithRouter(routes(transport)))
 	_ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
 		fmt.Println("Sending welcome email to", msg.Email)
 		cancel() // stop after one message to end the example

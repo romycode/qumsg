@@ -8,9 +8,9 @@
 //
 // Messages are identified on the wire by their qumsg.NamedMessage alias, not
 // by their Go type, so types can be renamed or moved without breaking queued
-// messages. The consumer side declares the types it can decode with
-// Transport.Register. The metadata of the qumsg.Envelope travel as a JSON
-// object, independent of the payload codec.
+// messages. The consumer side learns the types it can decode from the router
+// of the bus that consumes it (see Accept). The metadata of the
+// qumsg.Envelope travel as a JSON object, independent of the payload codec.
 package valkey
 
 import (
@@ -40,7 +40,7 @@ const (
 	fieldMetadata = "metadata"
 )
 
-// ErrUnnamedMessage is returned by Send and Register when the message type
+// ErrUnnamedMessage is returned by Send and Accept when the message type
 // does not implement qumsg.NamedMessage, which is required to identify it on
 // the wire.
 var ErrUnnamedMessage = errors.New("valkey: message type must implement qumsg.NamedMessage")
@@ -140,7 +140,10 @@ type Transport struct {
 
 type decoder func(codec Codec, payload []byte) (any, error)
 
-var _ qumsg.Transport = (*Transport)(nil)
+var (
+	_ qumsg.Transport = (*Transport)(nil)
+	_ qumsg.Decoder   = (*Transport)(nil)
+)
 
 // New creates a transport on stream.
 func New(client vk.Client, stream string, opts ...Option) *Transport {
@@ -171,17 +174,13 @@ func defaultConsumer() string {
 	return host + "-" + hex.EncodeToString(suffix)
 }
 
-// Register declares that messages of type T can be received. T must implement
-// qumsg.NamedMessage with the same rules as qumsg.Bus.Register: a non-empty
-// alias, unique per transport. It is RegisterTypes with qumsg.TypeOf[T]().
-func (t *Transport) Register[T any]() error {
-	return t.RegisterTypes(qumsg.TypeOf[T]())
-}
-
-// RegisterTypes is Register for every type in types, typically a list shared
-// with the producers' bus.RouteTypes. It registers all of them or, if any is
-// invalid or its alias is taken, none.
-func (t *Transport) RegisterTypes(types ...qumsg.Type) error {
+// Accept declares the message types that can be received, all of them or,
+// if any is invalid or its alias is taken, none. qumsg.Bus.Consume calls it
+// with the types that the router of the bus routes to this transport, so a
+// worker only needs to share the router with the producers. Each type must
+// implement qumsg.NamedMessage with the same rules as qumsg.Bus.Register: a
+// non-empty alias, unique per transport. Accepting a type again is allowed.
+func (t *Transport) Accept(types ...qumsg.Type) error {
 	names := make([]string, len(types))
 	for i, typ := range types {
 		if err := typ.Err(); err != nil {

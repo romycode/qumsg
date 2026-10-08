@@ -54,7 +54,7 @@ func newTransport(t testing.TB, opts ...valkey.Option) (*valkey.Transport, vk.Cl
 	stream := newStream(t, client)
 	opts = append([]valkey.Option{valkey.WithBlock(50 * time.Millisecond)}, opts...)
 	tr := valkey.New(client, stream, opts...)
-	if err := tr.Register[userCreated](); err != nil {
+	if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
 		t.Fatal(err)
 	}
 	return tr, client, stream
@@ -116,7 +116,7 @@ func TestSendAndReceive(t *testing.T) {
 
 func TestPointerMessages(t *testing.T) {
 	tr, _, _ := newTransport(t)
-	if err := tr.Register[*renamed](); err != nil {
+	if err := tr.Accept(qumsg.TypeOf[*renamed]()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,7 +158,7 @@ func TestClaimsMessagesOfAStoppedConsumer(t *testing.T) {
 			valkey.WithBlock(20*time.Millisecond),
 			valkey.WithClaimIdle(100*time.Millisecond),
 		)
-		if err := tr.Register[userCreated](); err != nil {
+		if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
 			t.Fatal(err)
 		}
 		return tr
@@ -180,7 +180,7 @@ func TestConsumersShareTheGroup(t *testing.T) {
 	a := valkey.New(client, stream, valkey.WithConsumer("a"), valkey.WithBlock(20*time.Millisecond))
 	b := valkey.New(client, stream, valkey.WithConsumer("b"), valkey.WithBlock(20*time.Millisecond))
 	for _, tr := range []*valkey.Transport{a, b} {
-		if err := tr.Register[userCreated](); err != nil {
+		if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -313,17 +313,18 @@ func TestMaxLenTrimsTheStream(t *testing.T) {
 func TestConsumeEndToEnd(t *testing.T) {
 	tr, _, _ := newTransport(t)
 
-	producer := qumsg.New()
-	if err := producer.Route[userCreated](tr); err != nil {
+	router := qumsg.NewRouter()
+	if err := router.Route[userCreated](tr); err != nil {
 		t.Fatal(err)
 	}
+	producer := qumsg.New(qumsg.WithRouter(router))
 
 	const total = 50
 	var mu sync.Mutex
 	seen := make(map[string]int)
 	allDone := make(chan struct{})
 
-	worker := qumsg.New()
+	worker := qumsg.New(qumsg.WithRouter(router))
 	if err := worker.Register(func(_ context.Context, msg userCreated) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -369,7 +370,11 @@ func TestConsumeHandsOverFailedMessages(t *testing.T) {
 	mustSend(t, tr, unregistered{})
 
 	boom := errors.New("boom")
-	worker := qumsg.New()
+	router := qumsg.NewRouter()
+	if err := router.Route[userCreated](tr); err != nil {
+		t.Fatal(err)
+	}
+	worker := qumsg.New(qumsg.WithRouter(router))
 	attempts := 0
 	if err := worker.Register(func(context.Context, userCreated) error {
 		attempts++

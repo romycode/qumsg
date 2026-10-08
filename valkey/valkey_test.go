@@ -36,19 +36,19 @@ func newOffline(opts ...valkey.Option) *valkey.Transport {
 	return valkey.New(nil, "offline", opts...)
 }
 
-func TestRegisterValidation(t *testing.T) {
+func TestAcceptValidation(t *testing.T) {
 	cases := map[string]struct {
-		register func(*valkey.Transport) error
-		want     error
+		accept func(*valkey.Transport) error
+		want   error
 	}{
-		"interface type": {func(tr *valkey.Transport) error { return tr.Register[qumsg.NamedMessage]() }, qumsg.ErrInterfaceType},
-		"unnamed":        {func(tr *valkey.Transport) error { return tr.Register[unnamed]() }, valkey.ErrUnnamedMessage},
-		"empty name":     {func(tr *valkey.Transport) error { return tr.Register[emptyName]() }, qumsg.ErrEmptyName},
-		"name panics":    {func(tr *valkey.Transport) error { return tr.Register[fieldNamed]() }, qumsg.ErrNamePanic},
+		"interface type": {func(tr *valkey.Transport) error { return tr.Accept(qumsg.TypeOf[qumsg.NamedMessage]()) }, qumsg.ErrInterfaceType},
+		"unnamed":        {func(tr *valkey.Transport) error { return tr.Accept(qumsg.TypeOf[unnamed]()) }, valkey.ErrUnnamedMessage},
+		"empty name":     {func(tr *valkey.Transport) error { return tr.Accept(qumsg.TypeOf[emptyName]()) }, qumsg.ErrEmptyName},
+		"name panics":    {func(tr *valkey.Transport) error { return tr.Accept(qumsg.TypeOf[fieldNamed]()) }, qumsg.ErrNamePanic},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := tc.register(newOffline()); !errors.Is(err, tc.want) {
+			if err := tc.accept(newOffline()); !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})
@@ -56,26 +56,26 @@ func TestRegisterValidation(t *testing.T) {
 
 	t.Run("same type twice", func(t *testing.T) {
 		tr := newOffline()
-		if err := tr.Register[userCreated](); err != nil {
+		if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
 			t.Fatal(err)
 		}
-		if err := tr.Register[userCreated](); err != nil {
+		if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("name collision", func(t *testing.T) {
 		tr := newOffline()
-		if err := tr.Register[userCreated](); err != nil {
+		if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
 			t.Fatal(err)
 		}
-		if err := tr.Register[sameName](); !errors.Is(err, qumsg.ErrDuplicateName) {
+		if err := tr.Accept(qumsg.TypeOf[sameName]()); !errors.Is(err, qumsg.ErrDuplicateName) {
 			t.Fatalf("got %v, want ErrDuplicateName", err)
 		}
 	})
 
 	t.Run("pointer type", func(t *testing.T) {
-		if err := newOffline().Register[*userCreated](); err != nil {
+		if err := newOffline().Accept(qumsg.TypeOf[*userCreated]()); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -135,14 +135,14 @@ type productCreated struct{ ID string }
 
 func (productCreated) Name() string { return "products.created" }
 
-func TestRegisterTypes(t *testing.T) {
+func TestAccept(t *testing.T) {
 	t.Run("valid list", func(t *testing.T) {
 		tr := newOffline()
-		if err := tr.RegisterTypes(qumsg.TypeOf[userCreated](), qumsg.TypeOf[productCreated]()); err != nil {
+		if err := tr.Accept(qumsg.TypeOf[userCreated](), qumsg.TypeOf[productCreated]()); err != nil {
 			t.Fatal(err)
 		}
-		// Registering again, alone or in a list, is fine.
-		if err := tr.Register[userCreated](); err != nil {
+		// Accepting again, alone or in a list, is fine.
+		if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -158,27 +158,27 @@ func TestRegisterTypes(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			tr := newOffline()
-			if err := tr.RegisterTypes(tc.types...); !errors.Is(err, tc.want) {
+			if err := tr.Accept(tc.types...); !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
-			// Nothing was registered: productCreated can still take its alias
+			// Nothing was accepted: productCreated can still take its alias
 			// with another type.
-			if err := tr.RegisterTypes(qumsg.TypeOf[*productCreated]()); err != nil {
-				t.Fatalf("a failed RegisterTypes registered some types: %v", err)
+			if err := tr.Accept(qumsg.TypeOf[*productCreated]()); err != nil {
+				t.Fatalf("a failed Accept accepted some types: %v", err)
 			}
 		})
 	}
 
-	t.Run("collision with a registered type", func(t *testing.T) {
+	t.Run("collision with an accepted type", func(t *testing.T) {
 		tr := newOffline()
-		if err := tr.Register[userCreated](); err != nil {
+		if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
 			t.Fatal(err)
 		}
-		if err := tr.RegisterTypes(qumsg.TypeOf[productCreated](), qumsg.TypeOf[sameName]()); !errors.Is(err, qumsg.ErrDuplicateName) {
+		if err := tr.Accept(qumsg.TypeOf[productCreated](), qumsg.TypeOf[sameName]()); !errors.Is(err, qumsg.ErrDuplicateName) {
 			t.Fatalf("got %v, want ErrDuplicateName", err)
 		}
-		if err := tr.RegisterTypes(qumsg.TypeOf[*productCreated]()); err != nil {
-			t.Fatalf("productCreated was registered by a failed call: %v", err)
+		if err := tr.Accept(qumsg.TypeOf[*productCreated]()); err != nil {
+			t.Fatalf("productCreated was accepted by a failed call: %v", err)
 		}
 	})
 }

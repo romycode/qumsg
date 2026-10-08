@@ -24,7 +24,17 @@ func (SendWelcomeEmail) Name() string {
 }
 ```
 
-El proceso productor enruta el mensaje al stream:
+Los dos procesos comparten las rutas: una función que crea el router para el transporte de cada proceso.
+
+```go
+func routes(t qumsg.Transport) *qumsg.Router {
+    router := qumsg.NewRouter()
+    _ = router.Route[SendWelcomeEmail](t)
+    return router
+}
+```
+
+El proceso productor envía el mensaje al stream:
 
 ```go
 client, err := vk.NewClient(vk.ClientOption{InitAddress: []string{"localhost:6379"}})
@@ -33,23 +43,16 @@ if err != nil {
 }
 defer client.Close()
 
-producer := qumsg.New()
-if err := producer.Route[SendWelcomeEmail](valkey.New(client, "emails")); err != nil {
-    return err
-}
-
+producer := qumsg.New(qumsg.WithRouter(routes(valkey.New(client, "emails"))))
 err = producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 ```
 
-El proceso worker declara qué tipos sabe decodificar y consume el stream:
+El proceso worker consume el stream con sus handlers:
 
 ```go
 transport := valkey.New(client, "emails")
-if err := transport.Register[SendWelcomeEmail](); err != nil {
-    return err
-}
 
-worker := qumsg.New()
+worker := qumsg.New(qumsg.WithRouter(routes(transport)))
 if err := worker.Register(sendWelcomeEmail); err != nil {
     return err
 }
@@ -57,9 +60,9 @@ if err := worker.Register(sendWelcomeEmail); err != nil {
 return worker.Consume(ctx, transport, qumsg.WithWorkers(4))
 ```
 
-`Register[T]` es un método genérico con las mismas reglas que `qumsg.Bus.Register`: el alias no puede estar vacío ni repetirse entre tipos. El productor no necesita registrar los tipos; solo los usa para obtener su alias.
+El transporte implementa `qumsg.Decoder`: antes de recibir, `Consume` le pasa con `Accept` los tipos que el router envía a ese transporte, y así sabe decodificar cada alias. Esos tipos siguen las mismas reglas que `qumsg.Bus.Register`: el alias no puede estar vacío ni repetirse entre tipos. Si alguno no es válido, `Consume` devuelve el error sin empezar a recibir.
 
-Para una familia de mensajes, comparte una lista de [`qumsg.Type`](../README.md#familias-de-mensajes) entre el productor y el worker:
+Para una familia de mensajes, enruta una lista de [`qumsg.Type`](../README.md#familias-de-mensajes):
 
 ```go
 var EmailMessages = []qumsg.Type{
@@ -67,11 +70,8 @@ var EmailMessages = []qumsg.Type{
     qumsg.TypeOf[SendPasswordReset](),
 }
 
-_ = producer.RouteTypes(valkey.New(client, "emails"), EmailMessages...) // productor
-_ = transport.RegisterTypes(EmailMessages...)                          // worker
+_ = router.RouteTypes(transport, EmailMessages...)
 ```
-
-`RegisterTypes` registra todos los tipos de la lista o ninguno: si alguno no es válido o su alias ya está ocupado, devuelve el error sin registrar los demás.
 
 ## Cómo funciona
 
@@ -108,7 +108,7 @@ Además de los errores de Valkey, que se devuelven envueltos con la operación:
 
 | Error | Cuándo |
 | --- | --- |
-| `valkey.ErrUnnamedMessage` | `Send` o `Register` con un tipo que no implementa `qumsg.NamedMessage`. |
+| `valkey.ErrUnnamedMessage` | `Send` o `Accept` (al empezar `Consume`) con un tipo que no implementa `qumsg.NamedMessage`. |
 | `qumsg.ErrEmptyName`, `qumsg.ErrNamePanic`, `qumsg.ErrDuplicateName`, `qumsg.ErrInterfaceType` | Las mismas validaciones del alias que hace `qumsg.Bus.Register`. |
 | `qumsg.ErrNilMessage` | `Send` con un sobre sin mensaje. |
 | `qumsg.ErrTransportClosed` | `Send` o `Receive` después de `Close`. `Close` no borra los mensajes del stream ni cierra el cliente. |
