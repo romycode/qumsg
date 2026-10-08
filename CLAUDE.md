@@ -71,7 +71,7 @@ refactor!: make Register a generic method
 BREAKING CHANGE: qumsg.Register(bus, h) is now bus.Register(h).
 ```
 
-Cada versión se etiqueta como `vX.Y.Z` (etiqueta anotada) y se documenta en `CHANGELOG.md` (formato Keep a Changelog). Los cambios que aún no tienen versión van en `[Sin publicar]`. Todos los módulos comparten número de versión: cada release etiqueta el núcleo (`vX.Y.Z`) y cada módulo anidado con su ruta (`valkey/vX.Y.Z`) sobre el mismo commit, con un único CHANGELOG.
+Cada versión se etiqueta como `vX.Y.Z` (etiqueta anotada) y se documenta en `CHANGELOG.md` (formato Keep a Changelog). Los cambios que aún no tienen versión van en `[Sin publicar]`. Todos los módulos comparten número de versión: cada release etiqueta el núcleo (`vX.Y.Z`) y cada módulo anidado con su ruta (`valkey/vX.Y.Z`) sobre el mismo commit, con un único CHANGELOG. Excepción: si un módulo anidado usa algo nuevo del núcleo, se etiqueta primero el núcleo, y la etiqueta del módulo va en el commit siguiente, el que sube su `require` a esa versión (ver `v0.4.0`).
 
 El remoto `origin` usa SSH y la clave tiene passphrase, así que el push desde Claude Code falla. Usa HTTPS con las credenciales de `gh` solo para esa operación:
 

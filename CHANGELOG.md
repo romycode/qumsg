@@ -6,6 +6,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.4.0] - 2026-10-08
+
+El bus pasa a configurarse con opciones y deja de presuponer si despacha comandos o eventos. Incluye listas de tipos de mensaje para evitar repetir el registro tipo a tipo. El módulo de Valkey se etiqueta como `valkey/v0.4.0` en el commit siguiente, que sube su `require` del núcleo.
+
 ### Cambiado
 
 - **Incompatible:** `New` recibe opciones en vez de middleware: `qumsg.New(logging)` pasa a ser `qumsg.New(qumsg.WithMiddleware(logging))`.
@@ -56,7 +60,8 @@ Primera versión: bus de mensajes síncrono en proceso. Requiere Go 1.27+.
 - Uso concurrente seguro una vez configurado, sin asignaciones de memoria en el camino de dispatch.
 - Ejemplos del README verificados como tests (`example_test.go`) y benchmarks ejecutables en un contenedor con recursos limitados (`docker compose run --rm bench`).
 
-[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.3.0...HEAD
+[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/romycode/qumsg/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/romycode/qumsg/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/romycode/qumsg/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/romycode/qumsg/releases/tag/v0.1.0
