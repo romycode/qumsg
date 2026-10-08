@@ -392,12 +392,15 @@ Los handlers y los middleware son responsables de sincronizar el estado comparti
 
 ## Desarrollo
 
-```sh
-go test -race ./... ./valkey/...
+El `Makefile` gestiona el entorno local; `make` sin argumentos lista los objetivos:
 
-# Tests de integración del transporte de Valkey
-docker compose up -d --wait valkey
-go test -race -tags integration ./valkey/...
+```sh
+make test               # tests unitarios de todos los módulos
+make test-integration   # levanta Valkey en Docker y ejecuta los tests de integración
+make check              # formato, go vet y todos los tests: lo necesario antes de un commit
+make cover              # cobertura de todos los paquetes
+make bench BENCH=Parallel BENCH_CPUS=4   # benchmarks en un contenedor con recursos limitados
+make down               # para los contenedores
 ```
 
 El repositorio es un workspace de Go (`go.work`) con dos módulos: el núcleo en la raíz y `valkey/`. Desde la raíz, `./...` solo incluye el núcleo, así que el módulo de Valkey se indica aparte.

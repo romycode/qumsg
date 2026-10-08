@@ -6,6 +6,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Añadido
+
+- `Makefile` para el entorno local: tests unitarios y de integración, cobertura, benchmarks, formato, `go vet`, `go mod tidy` de los dos módulos y gestión de los contenedores.
+
 ## [0.3.0] - 2026-10-08
 
 Primer transporte externo: Valkey Streams, como módulo aparte (`github.com/romycode/qumsg/valkey`, etiqueta `valkey/v0.3.0`). El núcleo no cambia de API; ambos módulos comparten número de versión.

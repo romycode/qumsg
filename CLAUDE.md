@@ -12,6 +12,8 @@ Requiere **Go 1.27+**, que permite métodos genéricos.
 
 ## Comandos
 
+El `Makefile` agrupa los comandos habituales (`make` lista los objetivos): `make test`, `make test-integration` (levanta Valkey), `make check` (formato + vet + todos los tests, antes de cada commit), `make cover`, `make bench`, `make tidy` (incluye las credenciales para el módulo privado), `make up`/`down`/`clean`. Por debajo:
+
 ```sh
 go test -race ./... ./valkey/...                                 # todos los tests unitarios
 
@@ -35,7 +37,7 @@ Go ajusta `GOMAXPROCS` al límite de CPU del contenedor; el sufijo `-N` de cada 
 
 ## Arquitectura
 
-Es un **workspace de Go** (`go.work`) con dos módulos: el núcleo (raíz) y `valkey/` (`github.com/romycode/qumsg/valkey`, con su propio `go.mod` que requiere `qumsg` publicado y `valkey-go`). Desde la raíz `./...` no incluye `valkey/`. Si el módulo de Valkey necesita algo nuevo del núcleo, hay que publicar antes una versión del núcleo y subir el `require`; el `go.work` solo lo oculta en local. Para `go mod tidy` en `valkey/` (repo privado) usa `GOWORK=off GOPRIVATE='github.com/romycode/*'` y credenciales de `gh` por variables `GIT_CONFIG_*`, sin tocar la config global.
+Es un **workspace de Go** (`go.work`) con dos módulos: el núcleo (raíz) y `valkey/` (`github.com/romycode/qumsg/valkey`, con su propio `go.mod` que requiere `qumsg` publicado y `valkey-go`). Desde la raíz `./...` no incluye `valkey/`. Si el módulo de Valkey necesita algo nuevo del núcleo, hay que publicar antes una versión del núcleo y subir el `require`; el `go.work` solo lo oculta en local. Para `go mod tidy` en `valkey/` (repo privado) usa `make tidy`, que pone `GOWORK=off GOPRIVATE='github.com/romycode/*'` y credenciales de `gh` por variables `GIT_CONFIG_*`, sin tocar la config global.
 
 `bus.go` contiene el bus síncrono; `transport.go`, la parte asíncrona (`Transport`, `Delivery`, `Route`, `Consume`); `memory/`, el transporte en memoria. Los tests usan paquetes externos (`qumsg_test`, `memory_test`), así que solo ven la API pública:
 
