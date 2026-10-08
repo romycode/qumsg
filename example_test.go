@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/romycode/qumsg"
+	"github.com/romycode/qumsg/memory"
 )
 
 // Acceptance tests: each example reproduces a README section and fails if the
@@ -179,4 +180,64 @@ func ExampleNamedMessage() {
 	// Output:
 	// true
 	// true
+}
+
+type SendWelcomeEmail struct {
+	Email string
+}
+
+// README: "Ejecución asíncrona". The producer bus routes the message to a
+// transport and the worker bus consumes it with the real handler.
+func ExampleBus_Consume() {
+	ctx := context.Background()
+	transport := memory.New()
+
+	producer := qumsg.New()
+	_ = producer.Route[SendWelcomeEmail](transport)
+
+	worker := qumsg.New()
+	_ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
+		fmt.Println("Sending welcome email to", msg.Email)
+		return nil
+	})
+
+	_ = producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
+	_ = producer.Dispatch(ctx, SendWelcomeEmail{Email: "ana@example.com"})
+	fmt.Println("Queued:", transport.Len())
+
+	transport.Close() // Consume returns once the queue is drained
+	if err := worker.Consume(ctx, transport); err != nil {
+		fmt.Println("error:", err)
+	}
+	// Output:
+	// Queued: 2
+	// Sending welcome email to albert@example.com
+	// Sending welcome email to ana@example.com
+}
+
+// README: "Reintentos y fallos". A failed message is delivered again until
+// its last attempt, which goes to the failure handler.
+func ExampleWithFailureHandler() {
+	ctx := context.Background()
+	transport := memory.New()
+	_ = transport.Send(ctx, SendWelcomeEmail{Email: "albert@example.com"})
+
+	worker := qumsg.New()
+	_ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
+		fmt.Println("Attempt to send to", msg.Email)
+		return errors.New("smtp unavailable")
+	})
+
+	_ = worker.Consume(ctx, transport,
+		qumsg.WithMaxAttempts(3),
+		qumsg.WithFailureHandler(func(ctx context.Context, msg any, err error) {
+			fmt.Printf("Giving up on %+v: %v\n", msg, err)
+			transport.Close()
+		}),
+	)
+	// Output:
+	// Attempt to send to albert@example.com
+	// Attempt to send to albert@example.com
+	// Attempt to send to albert@example.com
+	// Giving up on {Email:albert@example.com}: smtp unavailable
 }

@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Qué es
 
-`github.com/romycode/qumsg` es un bus de mensajes **síncrono** en proceso, inspirado en Symfony Messenger. El `README.md` es el contrato público de la API: cualquier cambio de comportamiento debe reflejarse allí.
+`github.com/romycode/qumsg` es un bus de mensajes en proceso, inspirado en Symfony Messenger: `Dispatch` es **síncrono** y, opcionalmente, los mensajes se enrutan a un `Transport` y se consumen de forma asíncrona. El `README.md` es el contrato público de la API: cualquier cambio de comportamiento debe reflejarse allí.
 
-Requiere **Go 1.27+**: `(*Bus).Register[T]` es un método genérico. Prefiere métodos genéricos y tipos parametrizados frente a `any` cuando aporten tipado real.
+Requiere **Go 1.27+**, que permite métodos genéricos.
+
+**Regla: métodos genéricos antes que funciones genéricas.** Si una operación genérica tiene un receptor natural, se expone como método (`bus.Register[T](h)`, `bus.Route[T](t)`), no como función del paquete (`qumsg.Register(bus, h)`). Las funciones genéricas quedan para helpers internos sin receptor (`messageName[T]()`) y para lo que Go no permite como método: un método genérico no puede formar parte de una interfaz. Prefiere también tipos parametrizados frente a `any` cuando aporten tipado real.
 
 ## Comandos
 
@@ -27,9 +29,9 @@ Go ajusta `GOMAXPROCS` al límite de CPU del contenedor; el sufijo `-N` de cada 
 
 ## Arquitectura
 
-Todo está en `bus.go`. Los tests usan el paquete externo `qumsg_test`, así que solo ven la API pública:
+`bus.go` contiene el bus síncrono; `transport.go`, la parte asíncrona (`Transport`, `Delivery`, `Route`, `Consume`); `memory/`, el transporte en memoria. Los tests usan paquetes externos (`qumsg_test`, `memory_test`), así que solo ven la API pública:
 
-- `bus_test.go`: unitarios.
+- `bus_test.go`, `transport_test.go`, `memory/memory_test.go`: unitarios. Los que dependen de tiempo o bloqueos usan `testing/synctest` (reloj falso y `synctest.Wait`), nunca `time.Sleep` real.
 - `example_test.go`: aceptación. Cada `Example` reproduce una sección del README con su `// Output:`; si cambias un ejemplo del README o el comportamiento que describe, actualiza ambos. Fija la salida de lo que no sea determinista (p. ej. `time` y `duration` del logger).
 - Integración: no hay, porque el paquete no tiene dependencias externas. Si se añade un transporte, sus tests irán tras un build tag `integration`.
 
@@ -37,6 +39,8 @@ Todo está en `bus.go`. Los tests usan el paquete externo `qumsg_test`, así que
 - **Handlers tipados**: cada ruta es un `handlers[T]` (`[]func(context.Context, T) error`) que implementa la interfaz interna `route`. La aserción `message.(T)` se hace una vez por dispatch. Los handlers corren en orden de registro, se comprueba `ctx.Err()` antes de cada uno y el primer error corta la ejecución.
 - **Middleware**: `New` compone la cadena una sola vez alrededor de `b.handle` (el primero es el más externo). Envuelve el dispatch completo, no cada handler, y por eso trabaja con `any`.
 - **Alias (`NamedMessage`)**: se lee una vez en `Register` mediante `messageName[T]()`, que para tipos puntero llama a `Name()` sobre `new(Elem)` en vez de sobre `nil` y convierte un pánico de `Name()` en `ErrNamePanic`. `Bus.names` garantiza un alias único por tipo; `Dispatch` nunca resuelve por nombre.
+- **Asíncrono**: `Route[T]` es solo `Register` con un handler que llama a `t.Send`, así que hereda orden, alias y middleware. `Consume` lanza N workers que hacen `Receive → Dispatch → Ack/Nack`; el último intento fallido va al `FailureHandler` y se confirma. Al cancelar `ctx` deja de recibir, pero despacha y confirma lo recibido con `context.WithoutCancel`. Un error del transporte cancela al resto de workers con `context.WithCancelCause`.
+- **`memory.Transport`**: canal acotado que nunca se cierra (para no entrar en pánico al enviar); el cierre se señala con el canal `closed`. `Nack` reencola desde una goroutine (controlada con el `WaitGroup` `retries`) para no bloquear al worker si la cola está llena; el mutex `mu` evita que se inicie un reintento mientras `Close` espera a ese `WaitGroup`.
 - **Concurrencia**: `RWMutex` sobre `routes`/`names`. `Register` hace copy-on-write (`append(slices.Clip(current), h)`) para que un dispatch en curso conserve su slice. El contrato sigue siendo "registrar antes de despachar".
 
 ## Errores

@@ -1,6 +1,6 @@
 # qumsg
 
-Bus de mensajes síncrono para Go, inspirado en Symfony Messenger. Permite despachar structs a handlers tipados y envolver su ejecución con middleware.
+Bus de mensajes para Go, inspirado en Symfony Messenger. Permite despachar structs a handlers tipados, envolver su ejecución con middleware y, opcionalmente, enviarlos a un transporte para procesarlos de forma asíncrona.
 
 La aplicación crea un mensaje, lo entrega al bus y espera a que terminen sus handlers. El bus centraliza la selección de handlers y las operaciones transversales, mientras que cada handler contiene la lógica de la aplicación.
 
@@ -47,7 +47,7 @@ func run(ctx context.Context) error {
 
 Los ejemplos utilizan paquetes estándar como `context`, `fmt`, `log/slog` y `time`; los imports se omiten para centrar la lectura en el bus.
 
-## Qué incluye la primera versión
+## Qué incluye
 
 - Ejecución síncrona en la goroutine que llama a `Dispatch`.
 - Mensajes sin métodos obligatorios.
@@ -57,8 +57,10 @@ Los ejemplos utilizan paquetes estándar como `context`, `fmt`, `log/slog` y `ti
 - Middleware alrededor del dispatch completo.
 - Identificación por tipo Go y alias opcional mediante `Name()`.
 - Propagación de `context.Context`.
+- Ejecución asíncrona opcional: rutas hacia un transporte, consumo con workers, reintentos y apagado ordenado.
+- Un transporte en memoria (`qumsg/memory`).
 
-La primera versión no incluye colas, workers, transportes, persistencia, serialización, reintentos ni ejecución paralela de handlers. Tampoco incorpora un envelope o un sistema de stamps.
+No incluye todavía transportes externos, persistencia ni serialización. Tampoco incorpora un envelope o un sistema de stamps: los handlers de un mismo dispatch se siguen ejecutando secuencialmente.
 
 ## Mensajes e identidad
 
@@ -227,6 +229,109 @@ El primer middleware configurado es el más externo. La cadena se ejecuta una ve
 
 Un middleware habitual llama a `next` exactamente una vez. Llamarlo varias veces repite la ejecución posterior, incluidos sus efectos.
 
+## Ejecución asíncrona
+
+Un transporte desacopla quien envía un mensaje de quien lo procesa. El bus que produce el mensaje lo enruta al transporte, y un bus de worker lo recibe y lo despacha a los handlers reales:
+
+```go
+transport := memory.New()
+
+producer := qumsg.New()
+if err := producer.Route[SendWelcomeEmail](transport); err != nil {
+    return err
+}
+
+worker := qumsg.New(Logging(slog.Default()))
+if err := worker.Register(sendWelcomeEmail); err != nil {
+    return err
+}
+
+go worker.Consume(ctx, transport) // en otro proceso con un transporte externo
+
+// Vuelve en cuanto el mensaje está en el transporte.
+err := producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
+```
+
+`Route[T]` es un método genérico que registra un handler que envía el mensaje al transporte en vez de procesarlo. Sigue las mismas reglas que `Register`: valida el alias y se ejecuta en orden de registro junto a los demás handlers de `T`, así que un tipo puede procesarse en local y además enviarse.
+
+Usa buses distintos para producir y consumir. Si el bus de worker tuviera la ruta de `T` hacia el mismo transporte, cada mensaje consumido se volvería a enviar.
+
+El contexto no viaja por el transporte: `Consume` despacha con su propio contexto, no con el de quien llamó a `Dispatch` en el productor.
+
+### Transportes
+
+Un transporte implementa:
+
+```go
+type Transport interface {
+    Send(ctx context.Context, message any) error
+    Receive(ctx context.Context) (Delivery, error)
+}
+
+type Delivery interface {
+    Message() any
+    Attempt() int                   // número de entrega, empezando en 1
+    Ack(ctx context.Context) error  // procesado: el transporte lo olvida
+    Nack(ctx context.Context) error // falló: el transporte lo vuelve a entregar
+}
+```
+
+`Receive` se bloquea hasta que hay un mensaje, el contexto termina o el transporte se cierra; en este último caso devuelve `ErrTransportClosed`. Cada entrega se confirma exactamente una vez, con `Ack` o con `Nack`.
+
+### Consumo
+
+`Consume` recibe mensajes del transporte y los despacha en el bus hasta que el contexto termina o el transporte se cierra; en ambos casos devuelve `nil`.
+
+```go
+err := worker.Consume(ctx, transport,
+    qumsg.WithWorkers(4),      // mensajes en paralelo; por defecto 1
+    qumsg.WithMaxAttempts(5),  // por defecto 3
+)
+```
+
+- Si el dispatch termina sin error, confirma el mensaje con `Ack`.
+- Si falla y quedan intentos, lo devuelve con `Nack` para que el transporte lo entregue de nuevo.
+- Si falla en el último intento, lo pasa al `FailureHandler` y lo confirma con `Ack`.
+
+Con un solo worker y sin reintentos, los mensajes se procesan en el orden del transporte. Con varios workers o con reintentos, el orden no está garantizado.
+
+Al cancelar el contexto, `Consume` deja de recibir y espera a los mensajes en curso. Estos terminan con un contexto que conserva los valores del original pero no se cancela con él, así que un handler no queda a medias por el apagado. Un mensaje recibido siempre se confirma.
+
+Cualquier otro error del transporte en `Receive`, `Ack` o `Nack` detiene todos los workers y `Consume` lo devuelve.
+
+### Reintentos y fallos
+
+```go
+err := worker.Consume(ctx, transport,
+    qumsg.WithMaxAttempts(3),
+    qumsg.WithFailureHandler(func(ctx context.Context, msg any, err error) {
+        slog.ErrorContext(ctx, "Message failed", "message", msg, "error", err)
+    }),
+)
+```
+
+El `FailureHandler` recibe el mensaje y el error del último intento; puede registrarlo o enviarlo a otro transporte de mensajes fallidos. Sin `FailureHandler`, el mensaje se descarta.
+
+La entrega es **al menos una vez**: si un worker se detiene después de ejecutar el handler y antes de confirmar el mensaje, un transporte persistente lo entregará de nuevo. Los handlers asíncronos deben tolerar mensajes duplicados.
+
+### Transporte en memoria
+
+`memory.New` crea un transporte respaldado por una cola acotada en el propio proceso:
+
+```go
+transport := memory.New(
+    memory.WithCapacity(1000),           // por defecto 100
+    memory.WithRetryDelay(time.Second),  // espera antes de reentregar; por defecto 0
+)
+defer transport.Close()
+```
+
+- `Send` se bloquea mientras la cola está llena, hasta que hay hueco, el contexto termina o el transporte se cierra.
+- `Nack` vuelve a encolar el mensaje tras el retraso de reintento, con `Attempt` incrementado.
+- `Close` deja de aceptar mensajes. Los encolados se pueden seguir recibiendo; después, `Receive` devuelve `ErrTransportClosed`. Los reintentos pendientes se descartan.
+
+Los mensajes viven solo en memoria y se pierden si el proceso termina. Úsalo para desarrollo, tests o trabajo que se pueda perder.
+
 ## API
 
 | Operación | Responsabilidad |
@@ -235,8 +340,12 @@ Un middleware habitual llama a `next` exactamente una vez. Llamarlo varias veces
 | `(*Bus).Register[T any](handler func(context.Context, T) error) error` | Registra un handler para el tipo exacto `T` y valida su alias opcional. |
 | `(*Bus).Dispatch(ctx context.Context, message any) error` | Ejecuta el middleware y los handlers correspondientes. |
 | `NamedMessage.Name() string` | Proporciona un alias opcional, constante y único por tipo dentro del bus. |
+| `(*Bus).Route[T any](t Transport) error` | Registra un handler que envía los mensajes de tipo `T` al transporte. |
+| `(*Bus).Consume(ctx context.Context, t Transport, opts ...ConsumeOption) error` | Recibe mensajes del transporte y los despacha en el bus. |
+| `WithWorkers`, `WithMaxAttempts`, `WithFailureHandler` | Opciones de `Consume`. |
+| `memory.New(opts ...memory.Option) *memory.Transport` | Crea un transporte en memoria. |
 
-`Register` es un método genérico (Go 1.27+): `T` se infiere del handler, así que basta con `bus.Register(welcomeUser)`. El bus guarda los handlers de cada tipo ya tipados, de modo que un dispatch convierte el mensaje a `T` una sola vez y no por cada handler. `Dispatch` recibe `any` a propósito: resuelve por el tipo dinámico del mensaje y comparte la firma con el middleware.
+La API prefiere métodos genéricos a funciones genéricas. `Register` es un método genérico (Go 1.27+): `T` se infiere del handler, así que basta con `bus.Register(welcomeUser)`. El bus guarda los handlers de cada tipo ya tipados, de modo que un dispatch convierte el mensaje a `T` una sola vez y no por cada handler. `Dispatch` recibe `any` a propósito: resuelve por el tipo dinámico del mensaje y comparte la firma con el middleware.
 
 ## Errores y contexto
 
@@ -259,8 +368,10 @@ Los errores de un handler se devuelven sin envolver. Los errores propios del bus
 | `ErrEmptyName` | `Name()` devuelve una cadena vacía. |
 | `ErrNamePanic` | `Name()` entra en pánico sobre el valor cero, normalmente porque depende de campos. |
 | `ErrDuplicateName` | Otro tipo ya usa ese alias en el bus. |
+| `ErrNilTransport` | `Route` con un transporte `nil`. |
+| `ErrTransportClosed` | `Send` o `Receive` sobre un transporte cerrado. `Consume` lo trata como una parada normal. |
 
-`New` entra en pánico si recibe un middleware `nil`, porque es un error de programación detectado al configurar.
+`New` entra en pánico si recibe un middleware `nil`, y las opciones (`WithWorkers`, `WithMaxAttempts`, `memory.WithCapacity`, `memory.WithRetryDelay`) si reciben un valor fuera de rango, porque son errores de programación detectados al configurar.
 
 El bus no recupera panics automáticamente. Una política de recuperación, si la aplicación la necesita, puede implementarse como middleware.
 
@@ -270,7 +381,7 @@ Configura todos los handlers antes de empezar a despachar mensajes. Registrar du
 
 Una vez configurado, el bus permite utilizar el bus desde varias goroutines. Cada dispatch ejecuta sus propios handlers secuencialmente, pero dos dispatches pueden coincidir y llamar al mismo handler a la vez.
 
-Los handlers y los middleware son responsables de sincronizar el estado compartido al que acceden. El bus no crea goroutines ni copia en profundidad los mensajes: punteros, mapas o slices pueden compartir datos con el llamador.
+Los handlers y los middleware son responsables de sincronizar el estado compartido al que acceden. `Dispatch` no crea goroutines; solo `Consume` lo hace, una por worker. El bus no copia en profundidad los mensajes: punteros, mapas o slices pueden compartir datos con el llamador.
 
 ## Desarrollo
 
@@ -278,4 +389,4 @@ Los handlers y los middleware son responsables de sincronizar el estado comparti
 go test -race ./...
 ```
 
-Los ejemplos de este README están en `example_test.go` como funciones `Example` y se verifican con `go test`. Los tests unitarios de `bus_test.go` cubren la resolución por tipo exacto, el orden de handlers y middleware, la parada en el primer error, los alias y sus colisiones, la propagación del contexto y la cancelación, la conservación de errores y los dispatches concurrentes.
+Los ejemplos de este README están en `example_test.go` como funciones `Example` y se verifican con `go test`. Los tests unitarios de `bus_test.go`, `transport_test.go` y `memory/memory_test.go` cubren la resolución por tipo exacto, el orden de handlers y middleware, la parada en el primer error, los alias y sus colisiones, la propagación del contexto y la cancelación, la conservación de errores, los dispatches concurrentes, el consumo con reintentos, fallos, varios workers y apagado ordenado, y el transporte en memoria. Los tests con tiempo o bloqueos usan `testing/synctest`, así que son deterministas.

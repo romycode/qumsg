@@ -6,6 +6,14 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Añadido
+
+- Ejecución asíncrona mediante transportes: interfaces `Transport` y `Delivery`, con confirmación explícita (`Ack`/`Nack`) y número de intento.
+- `(*Bus).Route[T](transport)` para registrar un handler que envía los mensajes de tipo `T` al transporte en vez de procesarlos.
+- `(*Bus).Consume(ctx, transport, opts...)` para consumir mensajes con varios workers (`WithWorkers`), reintentos (`WithMaxAttempts`), un handler para los mensajes que agotan sus intentos (`WithFailureHandler`) y apagado ordenado al cancelar el contexto.
+- Paquete `qumsg/memory` con un transporte en memoria: cola acotada que bloquea al llenarse, retraso de reintento configurable y cierre que deja vaciar la cola.
+- Errores `ErrTransportClosed` y `ErrNilTransport`.
+
 ## [0.1.0] - 2026-10-08
 
 Primera versión: bus de mensajes síncrono en proceso. Requiere Go 1.27+.
