@@ -15,7 +15,13 @@ go test -race ./...                                              # todos los tes
 go test -race -run TestCancellationIsCheckedBetweenHandlers .    # un test
 go vet ./...
 gofmt -l *.go
+
+# Benchmarks (bench_test.go) en un contenedor con recursos limitados (2 CPUs y 512m por defecto)
+docker compose run --rm bench
+BENCH_CPUS=4 BENCH_MEMORY=1g BENCH=Parallel BENCH_COUNT=10 docker compose run --rm bench
 ```
+
+Go ajusta `GOMAXPROCS` al límite de CPU del contenedor; el sufijo `-N` de cada benchmark indica el valor usado.
 
 `.zzz/` es código anterior aparcado (otro diseño con SQS) y no forma parte del módulo: Go ignora los directorios que empiezan por punto. No lo modifiques ni lo incluyas en commits salvo que se pida.
 

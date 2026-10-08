@@ -1,0 +1,24 @@
+services:
+  # Benchmarks with limited resources, closer to a production container than a
+  # developer machine. Go >= 1.25 sets GOMAXPROCS from the CPU limit.
+  #   docker compose run --rm bench
+  #   BENCH_CPUS=4 BENCH=Parallel docker compose run --rm bench
+  bench:
+    image: golang:1.27
+    working_dir: /src
+    volumes:
+      - .:/src:ro
+      - go-cache:/root/.cache/go-build
+    environment:
+      GOFLAGS: -buildvcs=false
+    cpus: ${BENCH_CPUS:-2}
+    mem_limit: ${BENCH_MEMORY:-512m}
+    command:
+      - sh
+      - -c
+      - >-
+        go test -run '^$$' -bench '${BENCH:-.}' -benchmem
+        -count ${BENCH_COUNT:-5} ./...
+
+volumes:
+  go-cache:
