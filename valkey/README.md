@@ -59,6 +59,20 @@ return worker.Consume(ctx, transport, qumsg.WithWorkers(4))
 
 `Register[T]` es un método genérico con las mismas reglas que `qumsg.Bus.Register`: el alias no puede estar vacío ni repetirse entre tipos. El productor no necesita registrar los tipos; solo los usa para obtener su alias.
 
+Para una familia de mensajes, comparte una lista de [`qumsg.Type`](../README.md#familias-de-mensajes) entre el productor y el worker:
+
+```go
+var EmailMessages = []qumsg.Type{
+    qumsg.TypeOf[SendWelcomeEmail](),
+    qumsg.TypeOf[SendPasswordReset](),
+}
+
+_ = producer.RouteTypes(valkey.New(client, "emails"), EmailMessages...) // productor
+_ = transport.RegisterTypes(EmailMessages...)                          // worker
+```
+
+`RegisterTypes` registra todos los tipos de la lista o ninguno: si alguno no es válido o su alias ya está ocupado, devuelve el error sin registrar los demás.
+
 ## Cómo funciona
 
 Cada mensaje es una entrada del stream con tres campos: `name` (el alias), `payload` (el mensaje codificado, JSON por defecto) y `attempt` (el número de intento).

@@ -130,3 +130,55 @@ func TestOptionsValidateArguments(t *testing.T) {
 		})
 	}
 }
+
+type productCreated struct{ ID string }
+
+func (productCreated) Name() string { return "products.created" }
+
+func TestRegisterTypes(t *testing.T) {
+	t.Run("valid list", func(t *testing.T) {
+		tr := newOffline()
+		if err := tr.RegisterTypes(qumsg.TypeOf[userCreated](), qumsg.TypeOf[productCreated]()); err != nil {
+			t.Fatal(err)
+		}
+		// Registering again, alone or in a list, is fine.
+		if err := tr.Register[userCreated](); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	cases := map[string]struct {
+		types []qumsg.Type
+		want  error
+	}{
+		"zero type":         {[]qumsg.Type{qumsg.TypeOf[productCreated](), {}}, qumsg.ErrZeroType},
+		"unnamed":           {[]qumsg.Type{qumsg.TypeOf[productCreated](), qumsg.TypeOf[unnamed]()}, valkey.ErrUnnamedMessage},
+		"collision in list": {[]qumsg.Type{qumsg.TypeOf[productCreated](), qumsg.TypeOf[userCreated](), qumsg.TypeOf[sameName]()}, qumsg.ErrDuplicateName},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			tr := newOffline()
+			if err := tr.RegisterTypes(tc.types...); !errors.Is(err, tc.want) {
+				t.Fatalf("got %v, want %v", err, tc.want)
+			}
+			// Nothing was registered: productCreated can still take its alias
+			// with another type.
+			if err := tr.RegisterTypes(qumsg.TypeOf[*productCreated]()); err != nil {
+				t.Fatalf("a failed RegisterTypes registered some types: %v", err)
+			}
+		})
+	}
+
+	t.Run("collision with a registered type", func(t *testing.T) {
+		tr := newOffline()
+		if err := tr.Register[userCreated](); err != nil {
+			t.Fatal(err)
+		}
+		if err := tr.RegisterTypes(qumsg.TypeOf[productCreated](), qumsg.TypeOf[sameName]()); !errors.Is(err, qumsg.ErrDuplicateName) {
+			t.Fatalf("got %v, want ErrDuplicateName", err)
+		}
+		if err := tr.RegisterTypes(qumsg.TypeOf[*productCreated]()); err != nil {
+			t.Fatalf("productCreated was registered by a failed call: %v", err)
+		}
+	})
+}

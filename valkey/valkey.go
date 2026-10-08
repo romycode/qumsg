@@ -170,51 +170,48 @@ func defaultConsumer() string {
 
 // Register declares that messages of type T can be received. T must implement
 // qumsg.NamedMessage with the same rules as qumsg.Bus.Register: a non-empty
-// alias, unique per transport.
+// alias, unique per transport. It is RegisterTypes with qumsg.TypeOf[T]().
 func (t *Transport) Register[T any]() error {
-	typ := reflect.TypeFor[T]()
-	if typ.Kind() == reflect.Interface {
-		return fmt.Errorf("%w: %s", qumsg.ErrInterfaceType, typ)
-	}
+	return t.RegisterTypes(qumsg.TypeOf[T]())
+}
 
-	name, err := messageName[T]()
-	if err != nil {
-		return err
+// RegisterTypes is Register for every type in types, typically a list shared
+// with the producers' bus.RouteTypes. It registers all of them or, if any is
+// invalid or its alias is taken, none.
+func (t *Transport) RegisterTypes(types ...qumsg.Type) error {
+	names := make([]string, len(types))
+	for i, typ := range types {
+		if err := typ.Err(); err != nil {
+			return err
+		}
+		name, named := typ.Name()
+		if !named {
+			return fmt.Errorf("%w: %s", ErrUnnamedMessage, typ)
+		}
+		names[i] = name
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if other, ok := t.types[name]; ok && other != typ {
-		return fmt.Errorf("%w: %q is used by %s, cannot register %s", qumsg.ErrDuplicateName, name, other, typ)
-	}
-	t.types[name] = typ
-	t.decoders[name] = func(codec Codec, payload []byte) (any, error) {
-		var msg T
-		if err := codec.Unmarshal(payload, &msg); err != nil {
-			return nil, err
+	pending := make(map[string]reflect.Type, len(types))
+	for i, typ := range types {
+		other, ok := t.types[names[i]]
+		if !ok {
+			other, ok = pending[names[i]]
 		}
-		return msg, nil
+		if ok && other != typ.Reflect() {
+			return fmt.Errorf("%w: %q is used by %s, cannot register %s", qumsg.ErrDuplicateName, names[i], other, typ)
+		}
+		pending[names[i]] = typ.Reflect()
 	}
-
+	for i, typ := range types {
+		t.types[names[i]] = typ.Reflect()
+		t.decoders[names[i]] = func(codec Codec, payload []byte) (any, error) {
+			return typ.Decode(func(target any) error { return codec.Unmarshal(payload, target) })
+		}
+	}
 	return nil
-}
-
-// messageName returns the alias of T. For pointer types it calls Name on a
-// pointer to a zero value, like qumsg.Bus.Register.
-func messageName[T any]() (string, error) {
-	typ := reflect.TypeFor[T]()
-
-	var sample T
-	if typ.Kind() == reflect.Pointer {
-		sample = reflect.New(typ.Elem()).Interface().(T)
-	}
-
-	named, ok := any(sample).(qumsg.NamedMessage)
-	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrUnnamedMessage, typ)
-	}
-	return nameOf(named)
 }
 
 // nameOf calls Name, turning a panic into qumsg.ErrNamePanic.
