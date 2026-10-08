@@ -17,9 +17,10 @@ var (
 // Transport moves messages between the bus that sends them and the bus that
 // consumes them, possibly in another goroutine or process.
 type Transport interface {
-	// Send enqueues message. It may block, for example when the transport is
-	// full, and must stop waiting when ctx is done.
-	Send(ctx context.Context, message any) error
+	// Send enqueues the envelope, keeping its metadata. It may block, for
+	// example when the transport is full, and must stop waiting when ctx is
+	// done.
+	Send(ctx context.Context, e Envelope) error
 	// Receive blocks until a message is available, ctx is done or the
 	// transport is closed (ErrTransportClosed).
 	Receive(ctx context.Context) (Delivery, error)
@@ -28,7 +29,8 @@ type Transport interface {
 // Delivery is a received message that must be settled exactly once, with Ack
 // or Nack.
 type Delivery interface {
-	Message() any
+	// Envelope returns the message with the metadata it was sent with.
+	Envelope() Envelope
 	// Attempt is the delivery number of the message, starting at 1.
 	Attempt() int
 	// Ack confirms the message was processed; the transport forgets it.
@@ -38,9 +40,10 @@ type Delivery interface {
 }
 
 // Route registers a handler that sends messages of the exact type T to t
-// instead of processing them. It follows the same rules as Register: it runs
-// in registration order with the other handlers of T and validates the
-// optional alias.
+// instead of processing them, wrapped in an envelope filled by the
+// propagators of the bus. It follows the same rules as Register: it runs in
+// registration order with the other handlers of T and validates the optional
+// alias.
 //
 //	bus.Route[UserCreated](transport)
 func (b *Bus) Route[T any](t Transport) error {
@@ -48,7 +51,7 @@ func (b *Bus) Route[T any](t Transport) error {
 		return ErrNilTransport
 	}
 	return b.Register(func(ctx context.Context, msg T) error {
-		return t.Send(ctx, msg)
+		return t.Send(ctx, b.envelope(ctx, msg))
 	})
 }
 
@@ -147,8 +150,12 @@ func (b *Bus) Consume(ctx context.Context, t Transport, opts ...ConsumeOption) e
 }
 
 // settle dispatches a delivery and acknowledges it according to the result.
+// The propagators of the bus restore the metadata of the envelope into ctx
+// before the dispatch.
 func (b *Bus) settle(ctx context.Context, d Delivery, cfg *consumeConfig) error {
-	err := b.Dispatch(ctx, d.Message())
+	e := d.Envelope()
+	ctx = b.extract(ctx, e)
+	err := b.Dispatch(ctx, e.Message())
 	switch {
 	case err == nil:
 		return d.Ack(ctx)
@@ -156,7 +163,7 @@ func (b *Bus) settle(ctx context.Context, d Delivery, cfg *consumeConfig) error 
 		return d.Nack(ctx)
 	default:
 		if cfg.onFailure != nil {
-			cfg.onFailure(ctx, d.Message(), err)
+			cfg.onFailure(ctx, e.Message(), err)
 		}
 		return d.Ack(ctx)
 	}

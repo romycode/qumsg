@@ -220,7 +220,7 @@ func ExampleBus_Consume() {
 func ExampleWithFailureHandler() {
 	ctx := context.Background()
 	transport := memory.New()
-	_ = transport.Send(ctx, SendWelcomeEmail{Email: "albert@example.com"})
+	_ = transport.Send(ctx, qumsg.NewEnvelope(SendWelcomeEmail{Email: "albert@example.com"}))
 
 	worker := qumsg.New()
 	_ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
@@ -308,4 +308,31 @@ func ExampleTypeOf() {
 	// audit qumsg_test.InvoicePaid
 	// audit qumsg_test.InvoiceVoided
 	// queued: 1
+}
+
+type requestIDKey struct{}
+
+// README: "Metadatos". The request ID stored in the context of the producer
+// travels in the envelope and is back in the context of the worker handler.
+func ExampleWithPropagators() {
+	ctx := context.Background()
+	transport := memory.New()
+	requestID := qumsg.ContextValue("request_id", requestIDKey{})
+
+	producer := qumsg.New(qumsg.WithPropagators(requestID))
+	_ = producer.Route[SendWelcomeEmail](transport)
+
+	worker := qumsg.New(qumsg.WithPropagators(requestID))
+	_ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
+		fmt.Println("Request", ctx.Value(requestIDKey{}), "sends email to", msg.Email)
+		return nil
+	})
+
+	ctx = context.WithValue(ctx, requestIDKey{}, "req-42")
+	_ = producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
+
+	transport.Close()
+	_ = worker.Consume(context.Background(), transport)
+	// Output:
+	// Request req-42 sends email to albert@example.com
 }

@@ -58,10 +58,10 @@ func New(opts ...Option) *Transport {
 	return t
 }
 
-// Send enqueues message. When the queue is full it blocks until there is room,
-// ctx is done or the transport is closed (qumsg.ErrTransportClosed).
-func (t *Transport) Send(ctx context.Context, message any) error {
-	return t.enqueue(ctx, &delivery{transport: t, message: message, attempt: 1})
+// Send enqueues the envelope. When the queue is full it blocks until there is
+// room, ctx is done or the transport is closed (qumsg.ErrTransportClosed).
+func (t *Transport) Send(ctx context.Context, e qumsg.Envelope) error {
+	return t.enqueue(ctx, &delivery{transport: t, envelope: e, attempt: 1})
 }
 
 func (t *Transport) enqueue(ctx context.Context, d *delivery) error {
@@ -126,12 +126,12 @@ func (t *Transport) Len() int {
 
 type delivery struct {
 	transport *Transport
-	message   any
+	envelope  qumsg.Envelope
 	attempt   int
 	settled   atomic.Bool
 }
 
-func (d *delivery) Message() any { return d.message }
+func (d *delivery) Envelope() qumsg.Envelope { return d.envelope }
 
 func (d *delivery) Attempt() int { return d.attempt }
 
@@ -148,7 +148,7 @@ func (d *delivery) Nack(context.Context) error {
 	}
 
 	t := d.transport
-	next := &delivery{transport: t, message: d.message, attempt: d.attempt + 1}
+	next := &delivery{transport: t, envelope: d.envelope, attempt: d.attempt + 1}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

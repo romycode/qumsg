@@ -6,6 +6,15 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Cambiado
+
+- **Incompatible:** los transportes trabajan con sobres. `Transport.Send` recibe un `Envelope` en vez del mensaje y `Delivery.Message()` pasa a ser `Delivery.Envelope()`. Quien llame a `Send` directamente envuelve el mensaje con `qumsg.NewEnvelope(msg)`.
+
+### Añadido
+
+- Metadatos de mensaje: `Envelope` envuelve un mensaje con pares clave-valor de tipo string (`NewEnvelope`, `With`, `Get`, `Metadata`) que viajan por el transporte.
+- `Propagator` y la opción `WithPropagators`: `Route` y `RouteTypes` copian valores del contexto al sobre y `Consume` los devuelve al contexto del worker antes de despachar. `ContextValue` propaga un string guardado en el contexto.
+
 ## [0.4.0] - 2026-10-08
 
 El bus pasa a configurarse con opciones y deja de presuponer si despacha comandos o eventos. Incluye listas de tipos de mensaje para evitar repetir el registro tipo a tipo. El módulo de Valkey se etiqueta como `valkey/v0.4.0` en el commit siguiente, que sube su `require` del núcleo.

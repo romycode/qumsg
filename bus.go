@@ -89,6 +89,7 @@ func ContinueOnError() Option {
 type Bus struct {
 	dispatch        HandleFunc
 	middlewares     []Middleware // only used by New
+	propagators     []Propagator
 	allowNoHandler  bool
 	continueOnError bool
 

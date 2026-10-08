@@ -319,7 +319,51 @@ err := producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 
 Usa buses distintos para producir y consumir. Si el bus de worker tuviera la ruta de `T` hacia el mismo transporte, cada mensaje consumido se volvería a enviar.
 
-El contexto no viaja por el transporte: `Consume` despacha con su propio contexto, no con el de quien llamó a `Dispatch` en el productor.
+El contexto no viaja por el transporte: `Consume` despacha con su propio contexto, no con el de quien llamó a `Dispatch` en el productor. Los valores que deban acompañar al mensaje se llevan como [metadatos](#metadatos).
+
+### Metadatos
+
+Un `Envelope` envuelve el mensaje junto a sus metadatos, pares clave-valor de tipo string que cualquier transporte puede guardar: el request ID, el usuario que originó el mensaje o una traza. El sobre es inmutable; `With` devuelve una copia:
+
+```go
+e := qumsg.NewEnvelope(SendWelcomeEmail{Email: "albert@example.com"}).
+    With("request_id", "req-42")
+
+e.Message()           // SendWelcomeEmail{...}
+e.Get("request_id")   // "req-42", true
+e.Metadata()          // iter.Seq2[string, string], en cualquier orden
+```
+
+Los handlers no ven el sobre: la aplicación decide qué valores del contexto viajan con un `Propagator`, que los copia del contexto al sobre al enviar (`Inject`) y los devuelve al contexto del worker al consumir (`Extract`):
+
+```go
+type Propagator interface {
+    Inject(ctx context.Context, e Envelope) Envelope
+    Extract(ctx context.Context, e Envelope) context.Context
+}
+```
+
+`ContextValue(name, key)` cubre el caso habitual: un string guardado en el contexto bajo `key`, que viaja como el metadato `name`. Configura los mismos propagadores en el bus que produce y en el que consume:
+
+```go
+type requestIDKey struct{}
+
+requestID := qumsg.ContextValue("request_id", requestIDKey{})
+
+producer := qumsg.New(qumsg.WithPropagators(requestID))
+_ = producer.Route[SendWelcomeEmail](transport)
+
+worker := qumsg.New(qumsg.WithPropagators(requestID))
+_ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
+    id := ctx.Value(requestIDKey{}) // "req-42"
+    return nil
+})
+
+ctx = context.WithValue(ctx, requestIDKey{}, "req-42")
+err := producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
+```
+
+`Route` y `RouteTypes` crean el sobre y ejecutan `Inject` de cada propagador, en orden; `Consume` ejecuta `Extract` antes de despachar, así que el contexto del `FailureHandler` también lleva esos valores. Un `Dispatch` síncrono no usa propagadores: el contexto ya llega entero a los handlers.
 
 ### Transportes
 
@@ -327,19 +371,19 @@ Un transporte implementa:
 
 ```go
 type Transport interface {
-    Send(ctx context.Context, message any) error
+    Send(ctx context.Context, e Envelope) error
     Receive(ctx context.Context) (Delivery, error)
 }
 
 type Delivery interface {
-    Message() any
+    Envelope() Envelope             // mensaje y metadatos tal como se enviaron
     Attempt() int                   // número de entrega, empezando en 1
     Ack(ctx context.Context) error  // procesado: el transporte lo olvida
     Nack(ctx context.Context) error // falló: el transporte lo vuelve a entregar
 }
 ```
 
-`Receive` se bloquea hasta que hay un mensaje, el contexto termina o el transporte se cierra; en este último caso devuelve `ErrTransportClosed`. Cada entrega se confirma exactamente una vez, con `Ack` o con `Nack`.
+`Send` debe conservar los metadatos del sobre y `Receive` devolverlos en `Envelope()`. `Receive` se bloquea hasta que hay un mensaje, el contexto termina o el transporte se cierra; en este último caso devuelve `ErrTransportClosed`. Cada entrega se confirma exactamente una vez, con `Ack` o con `Nack`.
 
 ### Consumo
 
@@ -408,7 +452,7 @@ Cada transporte externo es un módulo Go aparte, para que el núcleo no dependa 
 | Operación | Responsabilidad |
 | --- | --- |
 | `New(opts ...Option) *Bus` | Crea un bus. |
-| `WithMiddleware`, `AllowNoHandler`, `ContinueOnError` | Opciones de `New`. |
+| `WithMiddleware`, `AllowNoHandler`, `ContinueOnError`, `WithPropagators` | Opciones de `New`. |
 | `(*Bus).Register[T any](handler func(context.Context, T) error) error` | Registra un handler para el tipo exacto `T` y valida su alias opcional. |
 | `(*Bus).Dispatch(ctx context.Context, message any) error` | Ejecuta el middleware y los handlers correspondientes, según las opciones del bus. |
 | `TypeOf[T any]() Type` | Representa el tipo `T` como valor para usarlo en listas. |
@@ -418,6 +462,8 @@ Cada transporte externo es un módulo Go aparte, para que el núcleo no dependa 
 | `(*Bus).Route[T any](t Transport) error` | Registra un handler que envía los mensajes de tipo `T` al transporte. |
 | `(*Bus).Consume(ctx context.Context, t Transport, opts ...ConsumeOption) error` | Recibe mensajes del transporte y los despacha en el bus. |
 | `WithWorkers`, `WithMaxAttempts`, `WithFailureHandler` | Opciones de `Consume`. |
+| `NewEnvelope(message any) Envelope` | Envuelve un mensaje para un transporte; `With`, `Get` y `Metadata` gestionan sus metadatos. |
+| `ContextValue(name string, key any) Propagator` | Propaga un string del contexto como metadato. |
 | `memory.New(opts ...memory.Option) *memory.Transport` | Crea un transporte en memoria. |
 
 La API prefiere métodos genéricos a funciones genéricas. `Register` es un método genérico (Go 1.27+): `T` se infiere del handler, así que basta con `bus.Register(welcomeUser)`. El bus guarda los handlers de cada tipo ya tipados, de modo que un dispatch convierte el mensaje a `T` una sola vez y no por cada handler. `Dispatch` recibe `any` a propósito: resuelve por el tipo dinámico del mensaje y comparte la firma con el middleware.
@@ -447,7 +493,7 @@ Los errores de un handler se devuelven sin envolver. Los errores propios del bus
 | `ErrZeroType` | Un `Type` vacío, no creado con `TypeOf`. |
 | `ErrTransportClosed` | `Send` o `Receive` sobre un transporte cerrado. `Consume` lo trata como una parada normal. |
 
-`New` entra en pánico si recibe una opción `nil`, `WithMiddleware` si recibe un middleware `nil`, y las opciones (`WithWorkers`, `WithMaxAttempts`, `memory.WithCapacity`, `memory.WithRetryDelay`) si reciben un valor fuera de rango, porque son errores de programación detectados al configurar.
+`New` entra en pánico si recibe una opción `nil`, `WithMiddleware` y `WithPropagators` si reciben un middleware o un propagador `nil`, y las opciones (`WithWorkers`, `WithMaxAttempts`, `memory.WithCapacity`, `memory.WithRetryDelay`) si reciben un valor fuera de rango, porque son errores de programación detectados al configurar.
 
 El bus no recupera panics automáticamente. Una política de recuperación, si la aplicación la necesita, puede implementarse como middleware.
 

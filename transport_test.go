@@ -19,7 +19,7 @@ type job struct{ N int }
 func sendAll(t *testing.T, tr *memory.Transport, jobs ...int) {
 	t.Helper()
 	for _, n := range jobs {
-		if err := tr.Send(t.Context(), job{N: n}); err != nil {
+		if err := tr.Send(t.Context(), qumsg.NewEnvelope(job{N: n})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -41,7 +41,7 @@ func TestRouteRegistersAHandlerThatEnqueues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := d.Message(); got != (job{N: 7}) {
+	if got := d.Envelope().Message(); got != (job{N: 7}) {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -81,7 +81,7 @@ func TestConsumeProcessesMessagesUntilTransportCloses(t *testing.T) {
 
 func TestConsumeRetriesUntilSuccess(t *testing.T) {
 	tr := memory.New()
-	if err := tr.Send(t.Context(), job{}); err != nil {
+	if err := tr.Send(t.Context(), qumsg.NewEnvelope(job{})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,7 +110,7 @@ func TestConsumeRetriesUntilSuccess(t *testing.T) {
 
 func TestConsumeHandsOverMessagesThatExhaustTheirAttempts(t *testing.T) {
 	tr := memory.New()
-	if err := tr.Send(t.Context(), job{N: 1}); err != nil {
+	if err := tr.Send(t.Context(), qumsg.NewEnvelope(job{N: 1})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -170,7 +170,7 @@ func TestConsumeDropsFailedMessagesWithoutFailureHandler(t *testing.T) {
 func TestConsumeFinishesInFlightMessagesOnCancel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		tr := memory.New()
-		if err := tr.Send(t.Context(), job{}); err != nil {
+		if err := tr.Send(t.Context(), qumsg.NewEnvelope(job{})); err != nil {
 			t.Fatal(err)
 		}
 
@@ -288,7 +288,7 @@ type fakeTransport struct {
 	delivery   *fakeDelivery
 }
 
-func (f *fakeTransport) Send(context.Context, any) error { return nil }
+func (f *fakeTransport) Send(context.Context, qumsg.Envelope) error { return nil }
 
 func (f *fakeTransport) Receive(context.Context) (qumsg.Delivery, error) {
 	if f.receiveErr != nil {
@@ -304,7 +304,7 @@ func (f *fakeTransport) Receive(context.Context) (qumsg.Delivery, error) {
 
 type fakeDelivery struct{ ackErr, nackErr error }
 
-func (*fakeDelivery) Message() any                 { return job{} }
+func (*fakeDelivery) Envelope() qumsg.Envelope     { return qumsg.NewEnvelope(job{}) }
 func (*fakeDelivery) Attempt() int                 { return 1 }
 func (d *fakeDelivery) Ack(context.Context) error  { return d.ackErr }
 func (d *fakeDelivery) Nack(context.Context) error { return d.nackErr }

@@ -137,8 +137,8 @@ func TestRouteTypes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if d.Message() != want {
-			t.Fatalf("got %#v, want %#v", d.Message(), want)
+		if d.Envelope().Message() != want {
+			t.Fatalf("got %#v, want %#v", d.Envelope().Message(), want)
 		}
 		_ = d.Ack(t.Context())
 	}

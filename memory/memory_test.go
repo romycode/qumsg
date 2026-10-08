@@ -14,7 +14,7 @@ import (
 
 func mustSend(t *testing.T, tr *memory.Transport, msg any) {
 	t.Helper()
-	if err := tr.Send(t.Context(), msg); err != nil {
+	if err := tr.Send(t.Context(), qumsg.NewEnvelope(msg)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -35,8 +35,8 @@ func TestReceiveReturnsMessagesInOrder(t *testing.T) {
 
 	for _, want := range []string{"a", "b"} {
 		d := mustReceive(t, tr)
-		if d.Message() != want || d.Attempt() != 1 {
-			t.Fatalf("got (%v, attempt %d), want (%v, attempt 1)", d.Message(), d.Attempt(), want)
+		if d.Envelope().Message() != want || d.Attempt() != 1 {
+			t.Fatalf("got (%v, attempt %d), want (%v, attempt 1)", d.Envelope().Message(), d.Attempt(), want)
 		}
 	}
 }
@@ -48,7 +48,7 @@ func TestSendBlocksWhenFull(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
-		if err := tr.Send(ctx, "b"); !errors.Is(err, context.DeadlineExceeded) {
+		if err := tr.Send(ctx, qumsg.NewEnvelope("b")); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("got %v, want DeadlineExceeded", err)
 		}
 	})
@@ -60,14 +60,14 @@ func TestSendUnblocksWhenThereIsRoom(t *testing.T) {
 		mustSend(t, tr, "a")
 
 		sent := make(chan error)
-		go func() { sent <- tr.Send(t.Context(), "b") }()
+		go func() { sent <- tr.Send(t.Context(), qumsg.NewEnvelope("b")) }()
 		synctest.Wait()
 
 		mustReceive(t, tr)
 		if err := <-sent; err != nil {
 			t.Fatal(err)
 		}
-		if got := mustReceive(t, tr).Message(); got != "b" {
+		if got := mustReceive(t, tr).Envelope().Message(); got != "b" {
 			t.Fatalf("got %v", got)
 		}
 	})
@@ -99,11 +99,11 @@ func TestCloseDrainsQueueAndRejectsSends(t *testing.T) {
 		t.Fatalf("second Close: %v", err)
 	}
 
-	if err := tr.Send(t.Context(), "late"); !errors.Is(err, qumsg.ErrTransportClosed) {
+	if err := tr.Send(t.Context(), qumsg.NewEnvelope("late")); !errors.Is(err, qumsg.ErrTransportClosed) {
 		t.Fatalf("Send after Close: got %v", err)
 	}
 	for i := range queued {
-		if got := mustReceive(t, tr).Message(); got != i {
+		if got := mustReceive(t, tr).Envelope().Message(); got != i {
 			t.Fatalf("got %v, want %d", got, i)
 		}
 	}
@@ -118,7 +118,7 @@ func TestCloseUnblocksPendingCalls(t *testing.T) {
 		mustSend(t, tr, "a")
 
 		sent := make(chan error)
-		go func() { sent <- tr.Send(t.Context(), "b") }()
+		go func() { sent <- tr.Send(t.Context(), qumsg.NewEnvelope("b")) }()
 		synctest.Wait()
 
 		tr.Close()
@@ -146,8 +146,8 @@ func TestNackRedeliversWithNextAttempt(t *testing.T) {
 		time.Sleep(time.Nanosecond)
 		synctest.Wait()
 		d := mustReceive(t, tr)
-		if d.Message() != "a" || d.Attempt() != 2 {
-			t.Fatalf("got (%v, attempt %d), want (a, attempt 2)", d.Message(), d.Attempt())
+		if d.Envelope().Message() != "a" || d.Attempt() != 2 {
+			t.Fatalf("got (%v, attempt %d), want (a, attempt 2)", d.Envelope().Message(), d.Attempt())
 		}
 	})
 }
@@ -198,7 +198,7 @@ func TestConcurrentUse(t *testing.T) {
 	seen := make(map[int]bool)
 	for range n {
 		d := mustReceive(t, tr)
-		seen[d.Message().(int)] = true
+		seen[d.Envelope().Message().(int)] = true
 		d.Ack(t.Context())
 	}
 	wg.Wait()

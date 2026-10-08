@@ -118,5 +118,7 @@ func (b *Bus) RouteTypes(t Transport, types ...Type) error {
 	if t == nil {
 		return ErrNilTransport
 	}
-	return b.RegisterFor(t.Send, types...)
+	return b.RegisterFor(func(ctx context.Context, msg any) error {
+		return t.Send(ctx, b.envelope(ctx, msg))
+	}, types...)
 }
