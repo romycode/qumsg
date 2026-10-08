@@ -9,7 +9,7 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 ### Cambiado
 
 - **Incompatible:** el enrutado pasa del bus a un `Router`. `bus.Route[T](t)` y `bus.RouteTypes(t, types...)` se sustituyen por `router.Route[T](t)` y `router.RouteTypes(t, types...)` sobre un `qumsg.NewRouter()`, que el bus recibe con la opción `WithRouter`.
-- **Incompatible:** un mensaje enrutado solo se envía: el bus ya no ejecuta en el mismo dispatch los handlers locales de su tipo. Antes la ruta era un handler más, en orden de registro.
+- Un mensaje enrutado se envía después de todos sus handlers locales, como si la ruta fuera el último handler, en vez de en su posición de registro. Con la política por defecto, el error de un handler local impide el envío; con `ContinueOnError` se envía igualmente y los errores se unen.
 - **Incompatible:** `valkey.Transport.Register[T]` y `RegisterTypes` desaparecen. El worker comparte el router con el productor y `Consume` pasa al transporte los tipos que recibe.
 
 ### Añadido

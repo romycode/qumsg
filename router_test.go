@@ -9,7 +9,7 @@ import (
 	"github.com/romycode/qumsg/memory"
 )
 
-func TestRoutedMessagesAreSentInsteadOfHandled(t *testing.T) {
+func TestRoutedMessagesAreHandledAndSent(t *testing.T) {
 	tr := memory.New()
 	router := qumsg.NewRouter()
 	if err := router.RouteTypes(tr, qumsg.TypeOf[userCreated](), qumsg.TypeOf[productCreated]()); err != nil {
@@ -17,6 +17,7 @@ func TestRoutedMessagesAreSentInsteadOfHandled(t *testing.T) {
 	}
 
 	var handled []any
+	var queued []int // messages in the transport when each handler ran
 	var middleware int
 	bus := qumsg.New(qumsg.WithRouter(router), qumsg.WithMiddleware(func(next qumsg.HandleFunc) qumsg.HandleFunc {
 		return func(ctx context.Context, msg any) error {
@@ -24,22 +25,30 @@ func TestRoutedMessagesAreSentInsteadOfHandled(t *testing.T) {
 			return next(ctx, msg)
 		}
 	}))
-	record := func(_ context.Context, msg any) error { handled = append(handled, msg); return nil }
+	record := func(_ context.Context, msg any) error {
+		handled = append(handled, msg)
+		queued = append(queued, tr.Len())
+		return nil
+	}
 	if err := bus.RegisterFor(record, qumsg.TypeOf[userCreated](), qumsg.TypeOf[job]()); err != nil {
 		t.Fatal(err)
 	}
 
+	// productCreated is routed without local handlers: no ErrNoHandler.
 	for _, msg := range []any{userCreated{ID: "u"}, productCreated{ID: "p"}, job{N: 1}} {
 		if err := bus.Dispatch(t.Context(), msg); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if len(handled) != 1 || handled[0] != (job{N: 1}) {
-		t.Fatalf("only the unrouted job must be handled, got %v", handled)
+	if len(handled) != 2 || handled[0] != (userCreated{ID: "u"}) || handled[1] != (job{N: 1}) {
+		t.Fatalf("got handled %v, want userCreated and job", handled)
+	}
+	if queued[0] != 0 {
+		t.Fatal("userCreated was sent before its local handler ran")
 	}
 	if middleware != 3 {
-		t.Fatalf("middleware ran %d times, want 3: it wraps sends too", middleware)
+		t.Fatalf("middleware ran %d times, want 3", middleware)
 	}
 	for _, want := range []any{userCreated{ID: "u"}, productCreated{ID: "p"}} {
 		d, err := tr.Receive(t.Context())
@@ -50,6 +59,58 @@ func TestRoutedMessagesAreSentInsteadOfHandled(t *testing.T) {
 			t.Fatalf("got %#v, want %#v", d.Envelope().Message(), want)
 		}
 	}
+}
+
+func TestRoutedMessagesFollowTheErrorPolicy(t *testing.T) {
+	boom := errors.New("boom")
+	failing := func(context.Context, job) error { return boom }
+
+	t.Run("a handler error prevents the send", func(t *testing.T) {
+		tr := memory.New()
+		router := qumsg.NewRouter()
+		if err := router.Route[job](tr); err != nil {
+			t.Fatal(err)
+		}
+		bus := qumsg.New(qumsg.WithRouter(router))
+		if err := bus.Register(failing); err != nil {
+			t.Fatal(err)
+		}
+		if err := bus.Dispatch(t.Context(), job{}); err != boom {
+			t.Fatalf("got %v, want the handler error unwrapped", err)
+		}
+		if tr.Len() != 0 {
+			t.Fatal("the message was sent")
+		}
+	})
+
+	t.Run("ContinueOnError sends anyway and joins the errors", func(t *testing.T) {
+		tr := memory.New()
+		tr.Close() // Send fails with ErrTransportClosed
+		router := qumsg.NewRouter()
+		if err := router.Route[job](tr); err != nil {
+			t.Fatal(err)
+		}
+		bus := qumsg.New(qumsg.WithRouter(router), qumsg.ContinueOnError())
+		if err := bus.Register(failing); err != nil {
+			t.Fatal(err)
+		}
+		err := bus.Dispatch(t.Context(), job{})
+		if !errors.Is(err, boom) || !errors.Is(err, qumsg.ErrTransportClosed) {
+			t.Fatalf("got %v, want both errors", err)
+		}
+	})
+
+	t.Run("a send error alone is unwrapped", func(t *testing.T) {
+		tr := memory.New()
+		tr.Close()
+		router := qumsg.NewRouter()
+		if err := router.Route[job](tr); err != nil {
+			t.Fatal(err)
+		}
+		if err := qumsg.New(qumsg.WithRouter(router)).Dispatch(t.Context(), job{}); err != qumsg.ErrTransportClosed {
+			t.Fatalf("got %v, want ErrTransportClosed", err)
+		}
+	})
 }
 
 // The worker shares the router with the producer: what it consumes runs its

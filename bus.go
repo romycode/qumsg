@@ -205,35 +205,54 @@ func (b *Bus) chain(next HandleFunc) HandleFunc {
 	return next
 }
 
-// Dispatch runs the middleware chain and then sends the message to its
-// transport, if the router of the bus routes its type, or runs the handlers
-// registered for the concrete type of message. Handlers run sequentially; the first error stops
+// Dispatch runs the middleware chain and the handlers registered for the
+// concrete type of message. Handlers run sequentially; the first error stops
 // the execution unless the bus was created with ContinueOnError. The context
 // is checked before each handler: once it is done, the remaining handlers
 // are skipped.
+//
+// If the router of the bus routes the type of message, Dispatch then sends
+// it to its transport, as if the route were the last handler: a handler
+// error prevents the send unless the bus was created with ContinueOnError,
+// and a routed type needs no local handlers.
 func (b *Bus) Dispatch(ctx context.Context, message any) error {
 	return b.dispatch(ctx, message)
 }
 
-// sendOrHandle sends message to its transport if the router routes its type, and
-// otherwise handles it.
+// sendOrHandle handles message and, if the router routes its type, sends it
+// to its transport.
 func (b *Bus) sendOrHandle(ctx context.Context, message any) error {
-	if b.router != nil && message != nil {
-		if t, ok := b.router.transport(reflect.TypeOf(message)); ok {
-			return t.Send(ctx, b.envelope(ctx, message))
+	if b.router == nil || message == nil {
+		return b.handle(ctx, message)
+	}
+	t, routed := b.router.transport(reflect.TypeOf(message))
+	if !routed {
+		return b.handle(ctx, message)
+	}
+
+	var err error
+	if r, ok := b.lookup(message); ok {
+		err = r.handle(ctx, message, b.continueOnError)
+		if err != nil && !b.continueOnError {
+			return err
 		}
 	}
-	return b.handle(ctx, message)
+	sendErr := t.Send(ctx, b.envelope(ctx, message))
+	switch {
+	case err == nil:
+		return sendErr // unwrapped, like a handler error
+	case sendErr == nil:
+		return err
+	default:
+		return errors.Join(err, sendErr)
+	}
 }
 
 func (b *Bus) handle(ctx context.Context, message any) error {
 	if message == nil {
 		return ErrNilMessage
 	}
-	b.mu.RLock()
-	r, ok := b.routes[reflect.TypeOf(message)]
-	b.mu.RUnlock()
-
+	r, ok := b.lookup(message)
 	if !ok {
 		if b.allowNoHandler {
 			return nil
@@ -241,6 +260,14 @@ func (b *Bus) handle(ctx context.Context, message any) error {
 		return fmt.Errorf("%w: %T", ErrNoHandler, message)
 	}
 	return r.handle(ctx, message, b.continueOnError)
+}
+
+// lookup returns the handlers of the concrete type of message.
+func (b *Bus) lookup(message any) (route, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	r, ok := b.routes[reflect.TypeOf(message)]
+	return r, ok
 }
 
 // checkType validates T as a message type: it must be concrete, and its

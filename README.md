@@ -295,7 +295,7 @@ Un middleware habitual llama a `next` exactamente una vez. Llamarlo varias veces
 
 ## Ejecución asíncrona
 
-Un transporte desacopla quien envía un mensaje de quien lo procesa. Un `Router` dice qué tipos de mensaje van a qué transporte; el bus que lo recibe con `WithRouter` envía esos mensajes en vez de procesarlos, y un worker los recibe del transporte y los despacha a sus handlers:
+Un transporte desacopla quien envía un mensaje de quien lo procesa. Un `Router` dice qué tipos de mensaje van a qué transporte; el bus que lo recibe con `WithRouter` envía esos mensajes al despacharlos, y un worker los recibe del transporte y los despacha a sus handlers:
 
 ```go
 transport := memory.New()
@@ -319,7 +319,7 @@ err := producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 ```
 
 - `Router.Route[T]` envía los mensajes del tipo exacto `T` a un transporte, y `RouteTypes` hace lo mismo con una [lista de tipos](#familias-de-mensajes). Cada tipo va a un solo transporte (`ErrAlreadyRouted`), con las mismas reglas que `Register` para el alias. `RouteTypes` enruta todos los tipos o ninguno.
-- Un mensaje enrutado **solo se envía**: `Dispatch` ejecuta el middleware y lo entrega al transporte, pero no ejecuta los handlers de su tipo en ese bus. Los mensajes sin ruta se procesan en local como siempre.
+- Un mensaje enrutado **se procesa en local y además se envía**, como si la ruta fuera su último handler: `Dispatch` ejecuta el middleware, los handlers locales de su tipo, si los hay, y después lo entrega al transporte. Un tipo enrutado no necesita handlers locales (nunca da `ErrNoHandler`). Si un handler local falla, el mensaje no se envía, salvo con `ContinueOnError`, que lo envía igualmente y une los errores.
 - Lo que recibe `Consume` se procesa en local aunque su tipo esté enrutado: nunca se vuelve a enviar. Por eso el productor y el worker pueden compartir el mismo router, o la misma función que configura el bus.
 
 El contexto no viaja por el transporte: `Consume` despacha con su propio contexto, no con el de quien llamó a `Dispatch` en el productor. Los valores que deban acompañar al mensaje se llevan como [metadatos](#metadatos).

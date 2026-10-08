@@ -19,14 +19,14 @@ var (
 	ErrNoRoutes = errors.New("qumsg: no message types routed to the transport")
 )
 
-// Router decides which messages are sent to a transport instead of being
-// handled where they are dispatched. Each message type goes to at most one
-// transport.
+// Router decides which messages are also sent to a transport when they are
+// dispatched. Each message type goes to at most one transport.
 //
 // Share the same Router between the process that sends and the worker that
 // consumes: a bus created WithRouter sends the routed messages it dispatches,
-// and Consume handles the messages it receives with the local handlers and
-// tells a Decoder transport which types it carries.
+// and Consume handles the messages it receives with the local handlers,
+// without sending them again, and tells a Decoder transport which types it
+// carries.
 //
 // Configure the routes before dispatching; a Router is safe for concurrent
 // use.
@@ -124,8 +124,8 @@ func (r *Router) typesFor(t Transport) []Type {
 }
 
 // WithRouter makes the bus send the messages routed by r to their transport
-// instead of running their handlers, which only run when a worker consumes
-// them. It panics if r is nil.
+// after running their local handlers, if any; see Dispatch. It panics if r is
+// nil.
 func WithRouter(r *Router) Option {
 	if r == nil {
 		panic("qumsg: nil router")
