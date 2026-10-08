@@ -6,6 +6,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.5.0] - 2026-10-09
+
+Metadatos de mensaje: los transportes mueven sobres (`Envelope`) con pares clave-valor que acompañan al mensaje, y los propagadores del bus los copian del contexto del productor al del worker. El módulo de Valkey se etiqueta como `valkey/v0.5.0` en el commit siguiente, que sube su `require` del núcleo.
+
 ### Cambiado
 
 - **Incompatible:** los transportes trabajan con sobres. `Transport.Send` recibe un `Envelope` en vez del mensaje y `Delivery.Message()` pasa a ser `Delivery.Envelope()`. Quien llame a `Send` directamente envuelve el mensaje con `qumsg.NewEnvelope(msg)`.
@@ -70,7 +74,8 @@ Primera versión: bus de mensajes síncrono en proceso. Requiere Go 1.27+.
 - Uso concurrente seguro una vez configurado, sin asignaciones de memoria en el camino de dispatch.
 - Ejemplos del README verificados como tests (`example_test.go`) y benchmarks ejecutables en un contenedor con recursos limitados (`docker compose run --rm bench`).
 
-[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.4.0...HEAD
+[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/romycode/qumsg/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/romycode/qumsg/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/romycode/qumsg/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/romycode/qumsg/compare/v0.1.0...v0.2.0

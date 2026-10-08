@@ -4,7 +4,7 @@ Bus de mensajes para Go, inspirado en Symfony Messenger. Permite despachar struc
 
 La aplicación crea un mensaje, lo entrega al bus y espera a que terminen sus handlers. El bus centraliza la selección de handlers y las operaciones transversales, mientras que cada handler contiene la lógica de la aplicación.
 
-> **Estado:** `v0.4.0`. Requiere Go 1.27+. Mientras la versión sea `0.x` la API puede cambiar; consulta el [CHANGELOG](CHANGELOG.md).
+> **Estado:** `v0.5.0`. Requiere Go 1.27+. Mientras la versión sea `0.x` la API puede cambiar; consulta el [CHANGELOG](CHANGELOG.md).
 
 ```sh
 go get github.com/romycode/qumsg
@@ -343,7 +343,7 @@ type Propagator interface {
 }
 ```
 
-`ContextValue(name, key)` cubre el caso habitual: un string guardado en el contexto bajo `key`, que viaja como el metadato `name`. Configura los mismos propagadores en el bus que produce y en el que consume:
+`ContextValue(name, key)` cubre el caso habitual: un string guardado en el contexto bajo `key`, que viaja como el metadato `name`. Configura los mismos propagadores en el bus que produce y en el que consume; si falta en alguno de los dos, el valor no llega al worker y no hay ningún error que lo avise:
 
 ```go
 type requestIDKey struct{}
