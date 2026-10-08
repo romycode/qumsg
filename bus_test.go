@@ -164,6 +164,7 @@ func TestNilOptionsPanic(t *testing.T) {
 	for name, f := range map[string]func(){
 		"nil middleware": func() { qumsg.WithMiddleware(nil) },
 		"nil option":     func() { qumsg.New(nil) },
+		"nil router":     func() { qumsg.WithRouter(nil) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {

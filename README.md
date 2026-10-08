@@ -56,12 +56,13 @@ Los ejemplos utilizan paquetes estándar como `context`, `fmt`, `log/slog` y `ti
 - Ejecución en orden de registro y parada en el primer error, o ejecución de todos los handlers con `ContinueOnError`.
 - Opciones del bus para decidir si un mensaje sin handlers es un error (`AllowNoHandler`). El bus no distingue entre comandos y eventos: cada aplicación configura sus buses.
 - Listas de tipos (`qumsg.Type`) para registrar o enrutar una familia de mensajes de una vez.
+- Un `Router` que decide qué mensajes se envían a un transporte, compartido por quien produce y quien consume.
 - Middleware alrededor del dispatch completo.
 - Identificación por tipo Go y alias opcional mediante `Name()`.
 - Propagación de `context.Context`.
-- Ejecución asíncrona opcional: rutas hacia un transporte, consumo con workers, reintentos y apagado ordenado.
+- Ejecución asíncrona opcional: rutas hacia un transporte, consumo con workers, reintentos, apagado ordenado y metadatos que viajan con el mensaje.
 - Un transporte en memoria (`qumsg/memory`).
-- Un transporte sobre Valkey Streams en el módulo [`qumsg/valkey`](valkey/README.md), con persistencia, varios procesos y serialización JSON. Tampoco incorpora un envelope o un sistema de stamps: los handlers de un mismo dispatch se siguen ejecutando secuencialmente.
+- Un transporte sobre Valkey Streams en el módulo [`qumsg/valkey`](valkey/README.md), con persistencia, varios procesos y serialización JSON.
 
 ## Mensajes e identidad
 
@@ -204,7 +205,7 @@ Con cualquiera de las opciones, el contexto se comprueba antes de cada handler y
 
 ## Familias de mensajes
 
-`Register[T]` y `Route[T]` son métodos genéricos, y un método genérico no puede formar parte de una interfaz ni aplicarse a una lista de tipos. Para manejar una familia de mensajes (los eventos de un paquete, por ejemplo) sin repetir una llamada por tipo en cada sitio, `qumsg.TypeOf[T]()` captura el tipo en un valor y la lista se escribe una sola vez:
+`Bus.Register[T]` y `Router.Route[T]` son métodos genéricos, y un método genérico no puede formar parte de una interfaz ni aplicarse a una lista de tipos. Para manejar una familia de mensajes (los eventos de un paquete, por ejemplo) sin repetir una llamada por tipo en cada sitio, `qumsg.TypeOf[T]()` captura el tipo en un valor y la lista se escribe una sola vez:
 
 ```go
 type InvoicePaid struct{ ID string }
@@ -222,10 +223,10 @@ _ = bus.RegisterFor(func(ctx context.Context, msg any) error {
 }, InvoiceEvents...)
 
 // O enviarlos todos a un transporte.
-_ = producer.RouteTypes(transport, InvoiceEvents...)
+_ = router.RouteTypes(transport, InvoiceEvents...)
 ```
 
-`RegisterFor` equivale a llamar a `Register` por cada tipo con un handler que recibe el mensaje como `any`, así que se ejecuta en orden de registro junto a los handlers tipados y respeta los alias. Valida todos los tipos antes de registrar ninguno. `TypeOf` nunca falla: si `T` no es un tipo de mensaje válido, `Type.Err` lo indica y el registro devuelve ese error. Los transportes usan `Type.Decode` para decodificar mensajes sin ser genéricos, como hace `valkey.Transport.RegisterTypes`.
+`RegisterFor` equivale a llamar a `Register` por cada tipo con un handler que recibe el mensaje como `any`, así que se ejecuta en orden de registro junto a los handlers tipados y respeta los alias. Valida todos los tipos antes de registrar ninguno. `TypeOf` nunca falla: si `T` no es un tipo de mensaje válido, `Type.Err` lo indica y el registro devuelve ese error. Los transportes que implementan `Decoder` usan `Type.Decode` para decodificar mensajes sin ser genéricos, como hace `valkey.Transport`.
 
 ## Middleware
 
@@ -294,17 +295,19 @@ Un middleware habitual llama a `next` exactamente una vez. Llamarlo varias veces
 
 ## Ejecución asíncrona
 
-Un transporte desacopla quien envía un mensaje de quien lo procesa. El bus que produce el mensaje lo enruta al transporte, y un bus de worker lo recibe y lo despacha a los handlers reales:
+Un transporte desacopla quien envía un mensaje de quien lo procesa. Un `Router` dice qué tipos de mensaje van a qué transporte; el bus que lo recibe con `WithRouter` envía esos mensajes en vez de procesarlos, y un worker los recibe del transporte y los despacha a sus handlers:
 
 ```go
 transport := memory.New()
 
-producer := qumsg.New()
-if err := producer.Route[SendWelcomeEmail](transport); err != nil {
+router := qumsg.NewRouter()
+if err := router.Route[SendWelcomeEmail](transport); err != nil {
     return err
 }
 
-worker := qumsg.New(qumsg.WithMiddleware(Logging(slog.Default())))
+producer := qumsg.New(qumsg.WithRouter(router))
+
+worker := qumsg.New(qumsg.WithRouter(router), qumsg.WithMiddleware(Logging(slog.Default())))
 if err := worker.Register(sendWelcomeEmail); err != nil {
     return err
 }
@@ -315,9 +318,9 @@ go worker.Consume(ctx, transport) // en otro proceso con un transporte externo
 err := producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 ```
 
-`Route[T]` es un método genérico que registra un handler que envía el mensaje al transporte en vez de procesarlo. Sigue las mismas reglas que `Register`: valida el alias y se ejecuta en orden de registro junto a los demás handlers de `T`, así que un tipo puede procesarse en local y además enviarse.
-
-Usa buses distintos para producir y consumir. Si el bus de worker tuviera la ruta de `T` hacia el mismo transporte, cada mensaje consumido se volvería a enviar.
+- `Router.Route[T]` envía los mensajes del tipo exacto `T` a un transporte, y `RouteTypes` hace lo mismo con una [lista de tipos](#familias-de-mensajes). Cada tipo va a un solo transporte (`ErrAlreadyRouted`), con las mismas reglas que `Register` para el alias. `RouteTypes` enruta todos los tipos o ninguno.
+- Un mensaje enrutado **solo se envía**: `Dispatch` ejecuta el middleware y lo entrega al transporte, pero no ejecuta los handlers de su tipo en ese bus. Los mensajes sin ruta se procesan en local como siempre.
+- Lo que recibe `Consume` se procesa en local aunque su tipo esté enrutado: nunca se vuelve a enviar. Por eso el productor y el worker pueden compartir el mismo router, o la misma función que configura el bus.
 
 El contexto no viaja por el transporte: `Consume` despacha con su propio contexto, no con el de quien llamó a `Dispatch` en el productor. Los valores que deban acompañar al mensaje se llevan como [metadatos](#metadatos).
 
@@ -343,17 +346,17 @@ type Propagator interface {
 }
 ```
 
-`ContextValue(name, key)` cubre el caso habitual: un string guardado en el contexto bajo `key`, que viaja como el metadato `name`. Configura los mismos propagadores en el bus que produce y en el que consume; si falta en alguno de los dos, el valor no llega al worker y no hay ningún error que lo avise:
+`ContextValue(name, key)` cubre el caso habitual: un string guardado en el contexto bajo `key`, que viaja como el metadato `name`. Configura los mismos propagadores en el bus que produce y en el que consume; si falta en alguno de los dos, el valor no llega al worker y no hay ningún error que lo avise. Lo más sencillo es que los dos procesos creen el bus con las mismas opciones:
 
 ```go
 type requestIDKey struct{}
 
 requestID := qumsg.ContextValue("request_id", requestIDKey{})
+opts := []qumsg.Option{qumsg.WithRouter(router), qumsg.WithPropagators(requestID)}
 
-producer := qumsg.New(qumsg.WithPropagators(requestID))
-_ = producer.Route[SendWelcomeEmail](transport)
+producer := qumsg.New(opts...)
 
-worker := qumsg.New(qumsg.WithPropagators(requestID))
+worker := qumsg.New(opts...)
 _ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
     id := ctx.Value(requestIDKey{}) // "req-42"
     return nil
@@ -363,7 +366,7 @@ ctx = context.WithValue(ctx, requestIDKey{}, "req-42")
 err := producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 ```
 
-`Route` y `RouteTypes` crean el sobre y ejecutan `Inject` de cada propagador, en orden; `Consume` ejecuta `Extract` antes de despachar, así que el contexto del `FailureHandler` también lleva esos valores. Un `Dispatch` síncrono no usa propagadores: el contexto ya llega entero a los handlers.
+Al enviar un mensaje enrutado, el bus crea el sobre y ejecuta `Inject` de cada propagador, en orden; `Consume` ejecuta `Extract` antes de despachar, así que el contexto del `FailureHandler` también lleva esos valores. Un `Dispatch` síncrono no usa propagadores: el contexto ya llega entero a los handlers.
 
 ### Transportes
 
@@ -383,7 +386,17 @@ type Delivery interface {
 }
 ```
 
-`Send` debe conservar los metadatos del sobre y `Receive` devolverlos en `Envelope()`. `Receive` se bloquea hasta que hay un mensaje, el contexto termina o el transporte se cierra; en este último caso devuelve `ErrTransportClosed`. Cada entrega se confirma exactamente una vez, con `Ack` o con `Nack`.
+`Send` debe conservar los metadatos del sobre y `Receive` devolverlos en `Envelope()`. Un transporte que necesita conocer los tipos para decodificar lo que recibe, como uno que guarda los mensajes en bytes, implementa además `Decoder`:
+
+```go
+type Decoder interface {
+    Accept(types ...Type) error
+}
+```
+
+Antes de recibir, `Consume` le pasa los tipos que el router del bus envía a ese transporte; si no hay ninguno, devuelve `ErrNoRoutes`. Así el worker no repite la lista de tipos: le basta con el router.
+
+`Receive` se bloquea hasta que hay un mensaje, el contexto termina o el transporte se cierra; en este último caso devuelve `ErrTransportClosed`. Cada entrega se confirma exactamente una vez, con `Ack` o con `Nack`.
 
 ### Consumo
 
@@ -452,14 +465,15 @@ Cada transporte externo es un módulo Go aparte, para que el núcleo no dependa 
 | Operación | Responsabilidad |
 | --- | --- |
 | `New(opts ...Option) *Bus` | Crea un bus. |
-| `WithMiddleware`, `AllowNoHandler`, `ContinueOnError`, `WithPropagators` | Opciones de `New`. |
+| `WithMiddleware`, `AllowNoHandler`, `ContinueOnError`, `WithPropagators`, `WithRouter` | Opciones de `New`. |
 | `(*Bus).Register[T any](handler func(context.Context, T) error) error` | Registra un handler para el tipo exacto `T` y valida su alias opcional. |
 | `(*Bus).Dispatch(ctx context.Context, message any) error` | Ejecuta el middleware y los handlers correspondientes, según las opciones del bus. |
 | `TypeOf[T any]() Type` | Representa el tipo `T` como valor para usarlo en listas. |
 | `(*Bus).RegisterFor(handler HandleFunc, types ...Type) error` | Registra el mismo handler para todos los tipos de la lista. |
-| `(*Bus).RouteTypes(t Transport, types ...Type) error` | `Route` para todos los tipos de la lista. |
 | `NamedMessage.Name() string` | Proporciona un alias opcional, constante y único por tipo dentro del bus. |
-| `(*Bus).Route[T any](t Transport) error` | Registra un handler que envía los mensajes de tipo `T` al transporte. |
+| `NewRouter() *Router` | Crea un router sin rutas. |
+| `(*Router).Route[T any](t Transport) error` | Envía los mensajes de tipo `T` al transporte. |
+| `(*Router).RouteTypes(t Transport, types ...Type) error` | `Route` para todos los tipos de la lista. |
 | `(*Bus).Consume(ctx context.Context, t Transport, opts ...ConsumeOption) error` | Recibe mensajes del transporte y los despacha en el bus. |
 | `WithWorkers`, `WithMaxAttempts`, `WithFailureHandler` | Opciones de `Consume`. |
 | `NewEnvelope(message any) Envelope` | Envuelve un mensaje para un transporte; `With`, `Get` y `Metadata` gestionan sus metadatos. |
@@ -489,11 +503,13 @@ Los errores de un handler se devuelven sin envolver. Los errores propios del bus
 | `ErrEmptyName` | `Name()` devuelve una cadena vacía. |
 | `ErrNamePanic` | `Name()` entra en pánico sobre el valor cero, normalmente porque depende de campos. |
 | `ErrDuplicateName` | Otro tipo ya usa ese alias en el bus. |
-| `ErrNilTransport` | `Route` o `RouteTypes` con un transporte `nil`. |
+| `ErrNilTransport` | `Router.Route` o `Router.RouteTypes` con un transporte `nil`. |
+| `ErrAlreadyRouted` | El tipo ya va a otro transporte en el mismo router. |
+| `ErrNoRoutes` | `Consume` de un `Decoder` al que el router del bus no envía ningún tipo. |
 | `ErrZeroType` | Un `Type` vacío, no creado con `TypeOf`. |
 | `ErrTransportClosed` | `Send` o `Receive` sobre un transporte cerrado. `Consume` lo trata como una parada normal. |
 
-`New` entra en pánico si recibe una opción `nil`, `WithMiddleware` y `WithPropagators` si reciben un middleware o un propagador `nil`, y las opciones (`WithWorkers`, `WithMaxAttempts`, `memory.WithCapacity`, `memory.WithRetryDelay`) si reciben un valor fuera de rango, porque son errores de programación detectados al configurar.
+`New` entra en pánico si recibe una opción `nil`, `WithMiddleware`, `WithPropagators` y `WithRouter` si reciben un middleware, un propagador o un router `nil`, y las opciones (`WithWorkers`, `WithMaxAttempts`, `memory.WithCapacity`, `memory.WithRetryDelay`) si reciben un valor fuera de rango, porque son errores de programación detectados al configurar.
 
 El bus no recupera panics automáticamente. Una política de recuperación, si la aplicación la necesita, puede implementarse como middleware.
 

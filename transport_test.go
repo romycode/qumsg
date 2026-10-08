@@ -26,40 +26,6 @@ func sendAll(t *testing.T, tr *memory.Transport, jobs ...int) {
 	tr.Close()
 }
 
-func TestRouteRegistersAHandlerThatEnqueues(t *testing.T) {
-	tr := memory.New()
-	producer := qumsg.New()
-	if err := producer.Route[job](tr); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := producer.Dispatch(t.Context(), job{N: 7}); err != nil {
-		t.Fatal(err)
-	}
-
-	d, err := tr.Receive(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := d.Envelope().Message(); got != (job{N: 7}) {
-		t.Fatalf("got %v", got)
-	}
-}
-
-func TestRouteValidation(t *testing.T) {
-	t.Run("nil transport", func(t *testing.T) {
-		if err := qumsg.New().Route[job](nil); !errors.Is(err, qumsg.ErrNilTransport) {
-			t.Fatalf("got %v, want ErrNilTransport", err)
-		}
-	})
-
-	t.Run("same rules as Register", func(t *testing.T) {
-		if err := qumsg.New().Route[emptyName](memory.New()); !errors.Is(err, qumsg.ErrEmptyName) {
-			t.Fatalf("got %v, want ErrEmptyName", err)
-		}
-	})
-}
-
 func TestConsumeProcessesMessagesUntilTransportCloses(t *testing.T) {
 	tr := memory.New()
 	sendAll(t, tr, 1, 2, 3)

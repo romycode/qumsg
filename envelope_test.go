@@ -36,10 +36,11 @@ func TestPropagatorsCarryContextValuesThroughTheTransport(t *testing.T) {
 		qumsg.ContextValue("actor", metaKey("actor")),
 	)
 
-	producer := qumsg.New(propagators)
-	if err := producer.Route[job](tr); err != nil {
+	router := qumsg.NewRouter()
+	if err := router.Route[job](tr); err != nil {
 		t.Fatal(err)
 	}
+	producer := qumsg.New(propagators, qumsg.WithRouter(router))
 	ctx := context.WithValue(t.Context(), metaKey("request"), "req-1") // no actor
 	if err := producer.Dispatch(ctx, job{N: 1}); err != nil {
 		t.Fatal(err)
@@ -70,24 +71,5 @@ func TestPropagatorsCarryContextValuesThroughTheTransport(t *testing.T) {
 	}
 	if request != "req-1" || actor != nil {
 		t.Fatalf("got request %v, actor %v", request, actor)
-	}
-}
-
-func TestRouteTypesInjectsMetadata(t *testing.T) {
-	tr := memory.New()
-	bus := qumsg.New(qumsg.WithPropagators(qumsg.ContextValue("request_id", metaKey("request"))))
-	if err := bus.RouteTypes(tr, qumsg.TypeOf[job]()); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.WithValue(t.Context(), metaKey("request"), "req-2")
-	if err := bus.Dispatch(ctx, job{}); err != nil {
-		t.Fatal(err)
-	}
-	d, err := tr.Receive(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := d.Envelope().Get("request_id"); got != "req-2" {
-		t.Fatalf("got %q", got)
 	}
 }

@@ -6,6 +6,18 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Cambiado
+
+- **Incompatible:** el enrutado pasa del bus a un `Router`. `bus.Route[T](t)` y `bus.RouteTypes(t, types...)` se sustituyen por `router.Route[T](t)` y `router.RouteTypes(t, types...)` sobre un `qumsg.NewRouter()`, que el bus recibe con la opción `WithRouter`.
+- **Incompatible:** un mensaje enrutado solo se envía: el bus ya no ejecuta en el mismo dispatch los handlers locales de su tipo. Antes la ruta era un handler más, en orden de registro.
+- **Incompatible:** `valkey.Transport.Register[T]` y `RegisterTypes` desaparecen. El worker comparte el router con el productor y `Consume` pasa al transporte los tipos que recibe.
+
+### Añadido
+
+- `Router` (`NewRouter`, `Route[T]`, `RouteTypes`) y la opción `WithRouter`. Cada tipo va a un solo transporte (`ErrAlreadyRouted`) y `RouteTypes` enruta todos los tipos o ninguno.
+- `Consume` procesa en local lo que recibe aunque su tipo esté enrutado, así que productor y worker pueden crear el bus con las mismas opciones.
+- Interfaz `Decoder` para transportes que necesitan conocer los tipos: `Consume` les pasa con `Accept` los tipos que el router les envía, o devuelve `ErrNoRoutes` si no hay ninguno. `valkey.Transport` la implementa.
+
 ## [0.5.0] - 2026-10-09
 
 Metadatos de mensaje: los transportes mueven sobres (`Envelope`) con pares clave-valor que acompañan al mensaje, y los propagadores del bus los copian del contexto del productor al del worker. El módulo de Valkey se etiqueta como `valkey/v0.5.0` en el commit siguiente, que sube su `require` del núcleo.

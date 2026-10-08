@@ -83,9 +83,9 @@ func (p contextValue) Extract(ctx context.Context, e Envelope) context.Context {
 	return ctx
 }
 
-// WithPropagators adds propagators to the bus. Route and RouteTypes run Inject
-// on every message they send, and Consume runs Extract on every message it
-// dispatches, both in the order they were added. It panics if a propagator
+// WithPropagators adds propagators to the bus. The bus runs Inject on every
+// message it sends to a transport (see WithRouter), and Consume runs Extract
+// on every message it receives, both in the order they were added. It panics if a propagator
 // is nil.
 func WithPropagators(propagators ...Propagator) Option {
 	for _, p := range propagators {

@@ -12,13 +12,13 @@ var ErrZeroType = errors.New("qumsg: zero Type, create it with TypeOf")
 // Type is a message type as a value. A generic method cannot be part of an
 // interface or be called on a list of types, so code that handles a family
 // of messages (the events of a package, say) would need one Register[T] or
-// Route[T] call per type, repeated wherever the family is used. TypeOf
-// captures T once, and the list can then be passed to RegisterFor,
-// RouteTypes or a transport:
+// Router.Route[T] call per type, repeated wherever the family is used. TypeOf
+// captures T once, and the list can then be passed to Bus.RegisterFor or
+// Router.RouteTypes:
 //
 //	var Events = []qumsg.Type{qumsg.TypeOf[UserCreated](), qumsg.TypeOf[UserDeleted]()}
 //
-//	bus.RouteTypes(transport, Events...)
+//	router.RouteTypes(transport, Events...)
 //
 // The zero Type is invalid.
 type Type struct {
@@ -78,8 +78,8 @@ func (t Type) Err() error {
 }
 
 // Decode creates a zero message of the type, passes a pointer to it to
-// unmarshal and returns the message, not the pointer. Transports use it to
-// decode payloads without being generic:
+// unmarshal and returns the message, not the pointer. Transports that
+// implement Decoder use it to decode payloads without being generic:
 //
 //	msg, err := typ.Decode(func(target any) error { return json.Unmarshal(payload, target) })
 func (t Type) Decode(unmarshal func(target any) error) (any, error) {
@@ -110,15 +110,4 @@ func (b *Bus) RegisterFor(handler HandleFunc, types ...Type) error {
 		}
 	}
 	return nil
-}
-
-// RouteTypes is Route for every type in types, with the same rules as
-// RegisterFor.
-func (b *Bus) RouteTypes(t Transport, types ...Type) error {
-	if t == nil {
-		return ErrNilTransport
-	}
-	return b.RegisterFor(func(ctx context.Context, msg any) error {
-		return t.Send(ctx, b.envelope(ctx, msg))
-	}, types...)
 }

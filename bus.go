@@ -87,7 +87,9 @@ func ContinueOnError() Option {
 // Register all handlers before dispatching; once configured, a Bus is safe for
 // concurrent use.
 type Bus struct {
-	dispatch        HandleFunc
+	dispatch        HandleFunc // middleware + routing + handlers
+	consume         HandleFunc // middleware + handlers, for Consume
+	router          *Router
 	middlewares     []Middleware // only used by New
 	propagators     []Propagator
 	allowNoHandler  bool
@@ -158,11 +160,8 @@ func New(opts ...Option) *Bus {
 		opt(b)
 	}
 
-	next := b.handle
-	for i := len(b.middlewares) - 1; i >= 0; i-- {
-		next = b.middlewares[i](next)
-	}
-	b.dispatch = next
+	b.dispatch = b.chain(b.sendOrHandle)
+	b.consume = b.chain(b.handle)
 	b.middlewares = nil
 
 	return b
@@ -198,13 +197,33 @@ func (b *Bus) Register[T any](handler func(context.Context, T) error) error {
 	return nil
 }
 
-// Dispatch runs the middleware chain and the handlers registered for the
-// concrete type of message. Handlers run sequentially; the first error stops
+// chain wraps next with the middleware of the bus, the first one outermost.
+func (b *Bus) chain(next HandleFunc) HandleFunc {
+	for i := len(b.middlewares) - 1; i >= 0; i-- {
+		next = b.middlewares[i](next)
+	}
+	return next
+}
+
+// Dispatch runs the middleware chain and then sends the message to its
+// transport, if the router of the bus routes its type, or runs the handlers
+// registered for the concrete type of message. Handlers run sequentially; the first error stops
 // the execution unless the bus was created with ContinueOnError. The context
 // is checked before each handler: once it is done, the remaining handlers
 // are skipped.
 func (b *Bus) Dispatch(ctx context.Context, message any) error {
 	return b.dispatch(ctx, message)
+}
+
+// sendOrHandle sends message to its transport if the router routes its type, and
+// otherwise handles it.
+func (b *Bus) sendOrHandle(ctx context.Context, message any) error {
+	if b.router != nil && message != nil {
+		if t, ok := b.router.transport(reflect.TypeOf(message)); ok {
+			return t.Send(ctx, b.envelope(ctx, message))
+		}
+	}
+	return b.handle(ctx, message)
 }
 
 func (b *Bus) handle(ctx context.Context, message any) error {

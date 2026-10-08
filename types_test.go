@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/romycode/qumsg"
-	"github.com/romycode/qumsg/memory"
 )
 
 func TestTypeOf(t *testing.T) {
@@ -118,31 +117,5 @@ func TestRegisterFor(t *testing.T) {
 	}
 	if err := bus.RegisterFor(handler, qumsg.TypeOf[sameName]()); !errors.Is(err, qumsg.ErrDuplicateName) {
 		t.Fatalf("aliases are still unique: got %v", err)
-	}
-}
-
-func TestRouteTypes(t *testing.T) {
-	transport := memory.New()
-	bus := qumsg.New()
-	if err := bus.RouteTypes(transport, qumsg.TypeOf[userCreated](), qumsg.TypeOf[productCreated]()); err != nil {
-		t.Fatal(err)
-	}
-	for _, msg := range []any{userCreated{ID: "u"}, productCreated{ID: "p"}} {
-		if err := bus.Dispatch(t.Context(), msg); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, want := range []any{userCreated{ID: "u"}, productCreated{ID: "p"}} {
-		d, err := transport.Receive(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if d.Envelope().Message() != want {
-			t.Fatalf("got %#v, want %#v", d.Envelope().Message(), want)
-		}
-		_ = d.Ack(t.Context())
-	}
-	if err := bus.RouteTypes(nil, qumsg.TypeOf[userCreated]()); !errors.Is(err, qumsg.ErrNilTransport) {
-		t.Fatalf("nil transport: got %v", err)
 	}
 }
