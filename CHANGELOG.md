@@ -6,6 +6,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.3.0] - 2026-10-08
+
+Primer transporte externo: Valkey Streams, como módulo aparte (`github.com/romycode/qumsg/valkey`, etiqueta `valkey/v0.3.0`). El núcleo no cambia de API; ambos módulos comparten número de versión.
+
 ### Añadido
 
 - Módulo `github.com/romycode/qumsg/valkey` con un transporte sobre Valkey Streams: grupo de consumidores compartido entre procesos, `Register[T]` para declarar los tipos que se pueden decodificar, el alias `Name()` como identificador del mensaje en el stream, codec JSON intercambiable, reintentos con el número de intento en el propio mensaje, recuperación con `XAUTOCLAIM` de los mensajes de consumidores caídos, `UndecodableMessage` para nombres desconocidos o payloads inválidos y recorte opcional del stream.
@@ -40,6 +44,7 @@ Primera versión: bus de mensajes síncrono en proceso. Requiere Go 1.27+.
 - Uso concurrente seguro una vez configurado, sin asignaciones de memoria en el camino de dispatch.
 - Ejemplos del README verificados como tests (`example_test.go`) y benchmarks ejecutables en un contenedor con recursos limitados (`docker compose run --rm bench`).
 
-[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.2.0...HEAD
+[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/romycode/qumsg/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/romycode/qumsg/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/romycode/qumsg/releases/tag/v0.1.0
