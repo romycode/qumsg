@@ -89,7 +89,7 @@ func ExampleMiddleware() {
 		}
 	}
 
-	bus := qumsg.New(trace("first"), trace("second"))
+	bus := qumsg.New(qumsg.WithMiddleware(trace("first"), trace("second")))
 	_ = bus.Register(func(context.Context, UserCreated) error {
 		fmt.Println("handler 1")
 		return nil
@@ -152,7 +152,7 @@ func ExampleNew_logging() {
 		},
 	}))
 
-	bus := qumsg.New(Logging(logger))
+	bus := qumsg.New(qumsg.WithMiddleware(Logging(logger)))
 	_ = bus.Register(func(context.Context, UserCreated) error { return nil })
 
 	_ = bus.Dispatch(context.Background(), UserCreated{ID: "user-123"})
@@ -240,4 +240,72 @@ func ExampleWithFailureHandler() {
 	// Attempt to send to albert@example.com
 	// Attempt to send to albert@example.com
 	// Giving up on {Email:albert@example.com}: smtp unavailable
+}
+
+type OrderShipped struct{ ID string }
+
+// README "Opciones del bus": the same handlers with the default options and
+// with AllowNoHandler and ContinueOnError.
+func ExampleNew_options() {
+	ctx := context.Background()
+	register := func(bus *qumsg.Bus) {
+		_ = bus.Register(func(ctx context.Context, e OrderShipped) error {
+			fmt.Println("email for", e.ID)
+			return errors.New("smtp down")
+		})
+		_ = bus.Register(func(ctx context.Context, e OrderShipped) error {
+			fmt.Println("stock for", e.ID)
+			return nil
+		})
+	}
+
+	strict := qumsg.New()
+	register(strict)
+	fmt.Println(strict.Dispatch(ctx, OrderShipped{ID: "o-1"}))
+	err := strict.Dispatch(ctx, UserCreated{ID: "u-1"})
+	fmt.Println(errors.Is(err, qumsg.ErrNoHandler))
+
+	lenient := qumsg.New(qumsg.AllowNoHandler(), qumsg.ContinueOnError())
+	register(lenient)
+	fmt.Println(lenient.Dispatch(ctx, OrderShipped{ID: "o-2"}))
+	fmt.Println(lenient.Dispatch(ctx, UserCreated{ID: "u-2"}))
+	// Output:
+	// email for o-1
+	// smtp down
+	// true
+	// email for o-2
+	// stock for o-2
+	// smtp down
+	// <nil>
+}
+
+type InvoicePaid struct{ ID string }
+type InvoiceVoided struct{ ID string }
+
+// README "Familias de mensajes": one list of types for a family of messages.
+func ExampleTypeOf() {
+	ctx := context.Background()
+	invoiceEvents := []qumsg.Type{
+		qumsg.TypeOf[InvoicePaid](),
+		qumsg.TypeOf[InvoiceVoided](),
+	}
+
+	bus := qumsg.New()
+	_ = bus.RegisterFor(func(ctx context.Context, msg any) error {
+		fmt.Printf("audit %T\n", msg)
+		return nil
+	}, invoiceEvents...)
+
+	transport := memory.New()
+	producer := qumsg.New()
+	_ = producer.RouteTypes(transport, invoiceEvents...)
+
+	_ = bus.Dispatch(ctx, InvoicePaid{ID: "i-1"})
+	_ = bus.Dispatch(ctx, InvoiceVoided{ID: "i-1"})
+	_ = producer.Dispatch(ctx, InvoicePaid{ID: "i-2"})
+	fmt.Println("queued:", transport.Len())
+	// Output:
+	// audit qumsg_test.InvoicePaid
+	// audit qumsg_test.InvoiceVoided
+	// queued: 1
 }

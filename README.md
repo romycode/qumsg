@@ -53,7 +53,9 @@ Los ejemplos utilizan paquetes estándar como `context`, `fmt`, `log/slog` y `ti
 - Mensajes sin métodos obligatorios.
 - Registro explícito de handlers tipados.
 - Varios handlers para un mismo tipo de mensaje.
-- Ejecución en orden de registro y parada en el primer error.
+- Ejecución en orden de registro y parada en el primer error, o ejecución de todos los handlers con `ContinueOnError`.
+- Opciones del bus para decidir si un mensaje sin handlers es un error (`AllowNoHandler`). El bus no distingue entre comandos y eventos: cada aplicación configura sus buses.
+- Listas de tipos (`qumsg.Type`) para registrar o enrutar una familia de mensajes de una vez.
 - Middleware alrededor del dispatch completo.
 - Identificación por tipo Go y alias opcional mediante `Name()`.
 - Propagación de `context.Context`.
@@ -159,9 +161,71 @@ Al despachar un `UserCreated`:
 
 1. Se ejecuta `welcomeUser`.
 2. Si devuelve `nil`, se ejecuta `auditUserCreated`.
-3. Si cualquiera devuelve un error, se interrumpe la ejecución y se devuelve ese error.
+3. Si cualquiera devuelve un error, se interrumpe la ejecución y se devuelve ese error (salvo con [`ContinueOnError`](#opciones-del-bus)).
 
 El bus no revierte los efectos de los handlers que ya han terminado. Repetir manualmente el dispatch vuelve a ejecutar la secuencia desde el principio.
+
+## Opciones del bus
+
+El bus no sabe si un mensaje es un comando o un evento. Por defecto, un mensaje sin handlers devuelve `ErrNoHandler` y el primer error detiene al resto, lo que encaja con mensajes que alguien tiene que procesar. Dos opciones cambian ese comportamiento:
+
+| Opción | Efecto |
+| --- | --- |
+| `AllowNoHandler()` | Un mensaje sin handlers no es un error: `Dispatch` devuelve `nil`. |
+| `ContinueOnError()` | Se ejecutan todos los handlers aunque alguno falle, y sus errores se devuelven unidos con `errors.Join`; si solo falla uno, se devuelve sin envolver. |
+| `WithMiddleware(mws...)` | Añade middleware; ver [Middleware](#middleware). |
+
+Una aplicación que necesite ambos comportamientos crea un bus para cada uno:
+
+```go
+type OrderShipped struct{ ID string }
+
+strict := qumsg.New()
+lenient := qumsg.New(qumsg.AllowNoHandler(), qumsg.ContinueOnError())
+
+for _, bus := range []*qumsg.Bus{strict, lenient} {
+    _ = bus.Register(func(ctx context.Context, e OrderShipped) error {
+        fmt.Println("email for", e.ID)
+        return errors.New("smtp down")
+    })
+    _ = bus.Register(func(ctx context.Context, e OrderShipped) error {
+        fmt.Println("stock for", e.ID)
+        return nil
+    })
+}
+
+strict.Dispatch(ctx, OrderShipped{ID: "o-1"})  // email; devuelve "smtp down" sin ejecutar stock
+strict.Dispatch(ctx, UserCreated{ID: "u-1"})   // ErrNoHandler
+lenient.Dispatch(ctx, OrderShipped{ID: "o-2"}) // email y stock; devuelve "smtp down"
+lenient.Dispatch(ctx, UserCreated{ID: "u-2"})  // nil
+```
+
+Con cualquiera de las opciones, el contexto se comprueba antes de cada handler y el middleware envuelve el dispatch completo.
+
+## Familias de mensajes
+
+`Register[T]` y `Route[T]` son métodos genéricos, y un método genérico no puede formar parte de una interfaz ni aplicarse a una lista de tipos. Para manejar una familia de mensajes (los eventos de un paquete, por ejemplo) sin repetir una llamada por tipo en cada sitio, `qumsg.TypeOf[T]()` captura el tipo en un valor y la lista se escribe una sola vez:
+
+```go
+type InvoicePaid struct{ ID string }
+type InvoiceVoided struct{ ID string }
+
+var InvoiceEvents = []qumsg.Type{
+    qumsg.TypeOf[InvoicePaid](),
+    qumsg.TypeOf[InvoiceVoided](),
+}
+
+// Un handler para todos los tipos, por ejemplo un registro de auditoría.
+_ = bus.RegisterFor(func(ctx context.Context, msg any) error {
+    fmt.Printf("audit %T\n", msg)
+    return nil
+}, InvoiceEvents...)
+
+// O enviarlos todos a un transporte.
+_ = producer.RouteTypes(transport, InvoiceEvents...)
+```
+
+`RegisterFor` equivale a llamar a `Register` por cada tipo con un handler que recibe el mensaje como `any`, así que se ejecuta en orden de registro junto a los handlers tipados y respeta los alias. Valida todos los tipos antes de registrar ninguno. `TypeOf` nunca falla: si `T` no es un tipo de mensaje válido, `Type.Err` lo indica y el registro devuelve ese error. Los transportes usan `Type.Decode` para decodificar mensajes sin ser genéricos, como hace `valkey.Transport.RegisterTypes`.
 
 ## Middleware
 
@@ -209,14 +273,14 @@ func Logging(logger *slog.Logger) qumsg.Middleware {
 Se configura al crear el bus:
 
 ```go
-bus := qumsg.New(Logging(slog.Default()))
+bus := qumsg.New(qumsg.WithMiddleware(Logging(slog.Default())))
 ```
 
 El middleware puede ejecutar código antes y después, derivar un contexto para la siguiente operación o interrumpir el flujo devolviendo un error sin llamar a `next`.
 
 ### Orden de ejecución
 
-Para `qumsg.New(first, second)`, el orden es:
+Para `qumsg.New(qumsg.WithMiddleware(first, second))`, el orden es:
 
 1. Entrada de `first`.
 2. Entrada de `second`.
@@ -224,7 +288,7 @@ Para `qumsg.New(first, second)`, el orden es:
 4. Salida de `second`.
 5. Salida de `first`.
 
-El primer middleware configurado es el más externo. La cadena se ejecuta una vez por dispatch, no una vez por handler.
+El primer middleware configurado es el más externo; varias opciones `WithMiddleware` añaden el suyo en orden. La cadena se ejecuta una vez por dispatch, no una vez por handler.
 
 Un middleware habitual llama a `next` exactamente una vez. Llamarlo varias veces repite la ejecución posterior, incluidos sus efectos.
 
@@ -240,7 +304,7 @@ if err := producer.Route[SendWelcomeEmail](transport); err != nil {
     return err
 }
 
-worker := qumsg.New(Logging(slog.Default()))
+worker := qumsg.New(qumsg.WithMiddleware(Logging(slog.Default())))
 if err := worker.Register(sendWelcomeEmail); err != nil {
     return err
 }
@@ -343,9 +407,13 @@ Cada transporte externo es un módulo Go aparte, para que el núcleo no dependa 
 
 | Operación | Responsabilidad |
 | --- | --- |
-| `New(middlewares ...Middleware) *Bus` | Crea un bus con su cadena de middleware. |
+| `New(opts ...Option) *Bus` | Crea un bus. |
+| `WithMiddleware`, `AllowNoHandler`, `ContinueOnError` | Opciones de `New`. |
 | `(*Bus).Register[T any](handler func(context.Context, T) error) error` | Registra un handler para el tipo exacto `T` y valida su alias opcional. |
-| `(*Bus).Dispatch(ctx context.Context, message any) error` | Ejecuta el middleware y los handlers correspondientes. |
+| `(*Bus).Dispatch(ctx context.Context, message any) error` | Ejecuta el middleware y los handlers correspondientes, según las opciones del bus. |
+| `TypeOf[T any]() Type` | Representa el tipo `T` como valor para usarlo en listas. |
+| `(*Bus).RegisterFor(handler HandleFunc, types ...Type) error` | Registra el mismo handler para todos los tipos de la lista. |
+| `(*Bus).RouteTypes(t Transport, types ...Type) error` | `Route` para todos los tipos de la lista. |
 | `NamedMessage.Name() string` | Proporciona un alias opcional, constante y único por tipo dentro del bus. |
 | `(*Bus).Route[T any](t Transport) error` | Registra un handler que envía los mensajes de tipo `T` al transporte. |
 | `(*Bus).Consume(ctx context.Context, t Transport, opts ...ConsumeOption) error` | Recibe mensajes del transporte y los despacha en el bus. |
@@ -356,9 +424,9 @@ La API prefiere métodos genéricos a funciones genéricas. `Register` es un mé
 
 ## Errores y contexto
 
-Un dispatch sin un handler registrado para su tipo devuelve un error, salvo que un middleware interrumpa antes el flujo.
+Un dispatch sin un handler registrado para su tipo devuelve un error, salvo que el bus se haya creado con `AllowNoHandler` o que un middleware interrumpa antes el flujo.
 
-El error de un handler detiene los siguientes handlers y vuelve a través del middleware hasta el llamador. Si la implementación añade contexto al error, debe conservarlo para permitir su inspección mediante `errors.Is` y `errors.As`.
+El error de un handler detiene los siguientes handlers (o, con `ContinueOnError`, se une a los de los demás) y vuelve a través del middleware hasta el llamador. Si la implementación añade contexto al error, debe conservarlo para permitir su inspección mediante `errors.Is` y `errors.As`.
 
 El contexto se propaga desde `Dispatch` hasta los handlers, pasando por los middleware. Los handlers deben trasladarlo a las operaciones que realizan, como consultas o peticiones HTTP.
 
@@ -368,17 +436,18 @@ Los errores de un handler se devuelven sin envolver. Los errores propios del bus
 
 | Error | Cuándo |
 | --- | --- |
-| `ErrNoHandler` | `Dispatch` con un tipo sin handlers. |
+| `ErrNoHandler` | `Dispatch` con un tipo sin handlers, salvo con `AllowNoHandler`. |
 | `ErrNilMessage` | `Dispatch(ctx, nil)`. |
 | `ErrNilHandler` | `Register` con un handler `nil`. |
 | `ErrInterfaceType` | `Register` con `T` interfaz: nunca coincidiría con el tipo concreto de un mensaje. |
 | `ErrEmptyName` | `Name()` devuelve una cadena vacía. |
 | `ErrNamePanic` | `Name()` entra en pánico sobre el valor cero, normalmente porque depende de campos. |
 | `ErrDuplicateName` | Otro tipo ya usa ese alias en el bus. |
-| `ErrNilTransport` | `Route` con un transporte `nil`. |
+| `ErrNilTransport` | `Route` o `RouteTypes` con un transporte `nil`. |
+| `ErrZeroType` | Un `Type` vacío, no creado con `TypeOf`. |
 | `ErrTransportClosed` | `Send` o `Receive` sobre un transporte cerrado. `Consume` lo trata como una parada normal. |
 
-`New` entra en pánico si recibe un middleware `nil`, y las opciones (`WithWorkers`, `WithMaxAttempts`, `memory.WithCapacity`, `memory.WithRetryDelay`) si reciben un valor fuera de rango, porque son errores de programación detectados al configurar.
+`New` entra en pánico si recibe una opción `nil`, `WithMiddleware` si recibe un middleware `nil`, y las opciones (`WithWorkers`, `WithMaxAttempts`, `memory.WithCapacity`, `memory.WithRetryDelay`) si reciben un valor fuera de rango, porque son errores de programación detectados al configurar.
 
 El bus no recupera panics automáticamente. Una política de recuperación, si la aplicación la necesita, puede implementarse como middleware.
 

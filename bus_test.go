@@ -107,7 +107,7 @@ func TestHandlersRunInRegistrationOrderAndStopOnFirstError(t *testing.T) {
 }
 
 func TestHandlerErrorsKeepTheirIdentity(t *testing.T) {
-	bus := qumsg.New(func(next qumsg.HandleFunc) qumsg.HandleFunc { return next })
+	bus := qumsg.New(qumsg.WithMiddleware(func(next qumsg.HandleFunc) qumsg.HandleFunc { return next }))
 	mustRegister(t, bus, func(context.Context, productCreated) error {
 		return &customErr{msg: "custom"}
 	})
@@ -130,7 +130,7 @@ func TestMiddlewareWrapsWholeDispatchInOrder(t *testing.T) {
 			}
 		}
 	}
-	bus := qumsg.New(trace("first"), trace("second"))
+	bus := qumsg.New(qumsg.WithMiddleware(trace("first")), qumsg.WithMiddleware(trace("second")))
 	for _, name := range []string{"h1", "h2"} {
 		mustRegister(t, bus, func(context.Context, productCreated) error {
 			events = append(events, name)
@@ -150,9 +150,9 @@ func TestMiddlewareWrapsWholeDispatchInOrder(t *testing.T) {
 
 func TestMiddlewareCanShortCircuit(t *testing.T) {
 	denied := errors.New("denied")
-	bus := qumsg.New(func(qumsg.HandleFunc) qumsg.HandleFunc {
+	bus := qumsg.New(qumsg.WithMiddleware(func(qumsg.HandleFunc) qumsg.HandleFunc {
 		return func(context.Context, any) error { return denied }
-	})
+	}))
 
 	// No handler registered: the middleware stops the flow before resolution.
 	if err := bus.Dispatch(t.Context(), productCreated{}); err != denied {
@@ -160,21 +160,28 @@ func TestMiddlewareCanShortCircuit(t *testing.T) {
 	}
 }
 
-func TestNewPanicsOnNilMiddleware(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic")
-		}
-	}()
-	qumsg.New(nil)
+func TestNilOptionsPanic(t *testing.T) {
+	for name, f := range map[string]func(){
+		"nil middleware": func() { qumsg.WithMiddleware(nil) },
+		"nil option":     func() { qumsg.New(nil) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			f()
+		})
+	}
 }
 
 func TestContextPropagatesThroughMiddlewareToHandlers(t *testing.T) {
-	bus := qumsg.New(func(next qumsg.HandleFunc) qumsg.HandleFunc {
+	bus := qumsg.New(qumsg.WithMiddleware(func(next qumsg.HandleFunc) qumsg.HandleFunc {
 		return func(ctx context.Context, msg any) error {
 			return next(context.WithValue(ctx, ctxKey{}, "from-middleware"), msg)
 		}
-	})
+	}))
 	var got any
 	mustRegister(t, bus, func(ctx context.Context, _ productCreated) error {
 		got = ctx.Value(ctxKey{})

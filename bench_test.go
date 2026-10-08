@@ -41,7 +41,35 @@ func BenchmarkDispatch(b *testing.B) {
 			for i := range mws {
 				mws[i] = passthrough
 			}
-			bus := qumsg.New(mws...)
+			bus := qumsg.New(qumsg.WithMiddleware(mws...))
+			for range bc.handlers {
+				_ = bus.Register(noop)
+			}
+			ctx := b.Context()
+
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = bus.Dispatch(ctx, benchMessage{ID: 1})
+			}
+		})
+	}
+}
+
+// BenchmarkDispatchOptions measures the bus options: ContinueOnError should
+// cost the same when no handler fails, and AllowNoHandler skips building the
+// ErrNoHandler error.
+func BenchmarkDispatchOptions(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		handlers int
+		opts     []qumsg.Option
+	}{
+		{"ContinueOnError/1_handler", 1, []qumsg.Option{qumsg.ContinueOnError()}},
+		{"ContinueOnError/10_handlers", 10, []qumsg.Option{qumsg.ContinueOnError()}},
+		{"AllowNoHandler/0_handlers", 0, []qumsg.Option{qumsg.AllowNoHandler()}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			bus := qumsg.New(bc.opts...)
 			for range bc.handlers {
 				_ = bus.Register(noop)
 			}

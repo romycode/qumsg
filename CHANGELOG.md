@@ -6,8 +6,16 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Cambiado
+
+- **Incompatible:** `New` recibe opciones en vez de middleware: `qumsg.New(logging)` pasa a ser `qumsg.New(qumsg.WithMiddleware(logging))`.
+
 ### Añadido
 
+- Opciones del bus `AllowNoHandler` (un mensaje sin handlers no es un error) y `ContinueOnError` (se ejecutan todos los handlers y sus errores se unen con `errors.Join`; uno solo se devuelve sin envolver). El bus no distingue entre comandos y eventos: cada aplicación configura sus buses.
+- `qumsg.Type` y `TypeOf[T]()` para tratar una familia de tipos de mensaje como una lista: `(*Bus).RegisterFor` registra un handler para todos ellos, `(*Bus).RouteTypes` los enruta a un transporte y `Type.Decode` permite a los transportes decodificarlos sin ser genéricos.
+- `valkey.Transport.RegisterTypes`, que registra una lista de tipos de una vez, todos o ninguno. `Register[T]` pasa a ser un atajo de `RegisterTypes`.
+- Error `ErrZeroType` para un `Type` no creado con `TypeOf`.
 - `Makefile` para el entorno local: tests unitarios y de integración, cobertura, benchmarks, formato, `go vet`, `go mod tidy` de los dos módulos y gestión de los contenedores.
 
 ## [0.3.0] - 2026-10-08
