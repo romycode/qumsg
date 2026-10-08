@@ -6,6 +6,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.2.0] - 2026-10-08
+
+Ejecución asíncrona mediante transportes y un primer transporte en memoria.
+
 ### Añadido
 
 - Ejecución asíncrona mediante transportes: interfaces `Transport` y `Delivery`, con confirmación explícita (`Ack`/`Nack`) y número de intento.
@@ -30,5 +34,6 @@ Primera versión: bus de mensajes síncrono en proceso. Requiere Go 1.27+.
 - Uso concurrente seguro una vez configurado, sin asignaciones de memoria en el camino de dispatch.
 - Ejemplos del README verificados como tests (`example_test.go`) y benchmarks ejecutables en un contenedor con recursos limitados (`docker compose run --rm bench`).
 
-[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.1.0...HEAD
+[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/romycode/qumsg/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/romycode/qumsg/releases/tag/v0.1.0
