@@ -15,9 +15,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # El módulo valkey requiere el núcleo publicado, que es privado. El
-  # go.work lo sustituye por el directorio local, así que no se descarga;
-  # GOPRIVATE evita consultas al proxy y a la sumdb si llegara a pedirlo.
+  # El módulo valkey requiere el núcleo publicado (github.com/romycode/qumsg),
+  # que es privado. Aunque go.work usa el directorio local, Go descarga el
+  # go.mod de esa versión para construir el grafo de módulos: GOPRIVATE lo
+  # pide directamente a GitHub (sin proxy ni sumdb) y el paso "Acceso a
+  # módulos privados" autentica git con el GITHUB_TOKEN del workflow.
   GOPRIVATE: github.com/romycode/*
 
 jobs:
@@ -30,6 +32,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: valkey/go.sum
+      - name: Acceso a módulos privados
+        run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
       - name: gofmt
         run: |
           files="$(gofmt -l *.go memory valkey)"
@@ -64,6 +68,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: valkey/go.sum
+      - name: Acceso a módulos privados
+        run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
       - name: Unitarios
         run: go test -race ./... ./valkey/...
       - name: Integración (Valkey)
