@@ -11,6 +11,9 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 - `Consume` ya no respeta `AllowNoHandler`: un mensaje recibido sin handlers (por ejemplo un `valkey.UndecodableMessage`) falla con `ErrNoHandler` y llega al `FailureHandler`, en vez de confirmarse y perderse en silencio. `Dispatch` no cambia.
 - `memory.Transport.Send` con el contexto ya cancelado siempre devuelve su error, en vez de encolar o fallar al azar.
 - `TypeOf` y `Register` con un tipo puntero definido (`type P *T`) ya no entran en pánico.
+- `Router.Route` y `RouteTypes` rechazan con `ErrUncomparableTransport` un transporte cuyo tipo no es comparable, en vez de entrar en pánico al compararlo con `==`.
+- `valkey.Transport.Receive` espacia los `XAUTOCLAIM`: como mucho uno por `WithBlock` (o `WithClaimIdle`, si es menor), y seguidos mientras encuentre mensajes. Un consumidor ocupado ya no hace un viaje extra a Valkey por mensaje.
+- El README aclara que productor y worker comparten las opciones y el router, no los handlers del trabajo asíncrono: un handler registrado en los dos se ejecuta dos veces.
 
 ### Cambiado
 

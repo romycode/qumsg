@@ -10,6 +10,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -171,6 +172,49 @@ func TestClaimsMessagesOfAStoppedConsumer(t *testing.T) {
 	d := mustReceive(t, alive)
 	if d.Envelope().Message() != (userCreated{ID: "1"}) || d.Attempt() != 2 {
 		t.Fatalf("got (%#v, attempt %d), want the claimed message at attempt 2", d.Envelope().Message(), d.Attempt())
+	}
+}
+
+// Claiming is spaced out, but keeps going while it finds messages, so every
+// message a stopped consumer left behind is recovered.
+func TestClaimsEveryMessageOfAStoppedConsumer(t *testing.T) {
+	client := newClient(t)
+	stream := newStream(t, client)
+	newConsumer := func(name string) *valkey.Transport {
+		tr := valkey.New(client, stream,
+			valkey.WithConsumer(name),
+			valkey.WithBlock(20*time.Millisecond),
+			valkey.WithClaimIdle(100*time.Millisecond),
+		)
+		if err := tr.Accept(qumsg.TypeOf[userCreated]()); err != nil {
+			t.Fatal(err)
+		}
+		return tr
+	}
+	stopped, alive := newConsumer("stopped"), newConsumer("alive")
+
+	const n = 3
+	for i := range n {
+		mustSend(t, stopped, userCreated{ID: strconv.Itoa(i)})
+	}
+	for range n {
+		mustReceive(t, stopped) // never settled, as if the process died
+	}
+
+	seen := make(map[string]bool)
+	for range n {
+		d := mustReceive(t, alive)
+		msg, ok := d.Envelope().Message().(userCreated)
+		if !ok || d.Attempt() != 2 {
+			t.Fatalf("got (%#v, attempt %d), want a claimed userCreated at attempt 2", d.Envelope().Message(), d.Attempt())
+		}
+		seen[msg.ID] = true
+		if err := d.Ack(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(seen) != n {
+		t.Fatalf("claimed %v, want %d distinct messages", seen, n)
 	}
 }
 

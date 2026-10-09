@@ -135,6 +135,12 @@ type Transport struct {
 	groupMu    sync.Mutex
 	groupReady bool
 
+	// claimEvery spaces out XAUTOCLAIM: Receive claims at most once per
+	// interval, unless the previous claim found a message. nextClaim is the
+	// earliest time, in Unix nanoseconds, for the next claim.
+	claimEvery time.Duration
+	nextClaim  atomic.Int64
+
 	closed atomic.Bool
 }
 
@@ -161,6 +167,11 @@ func New(client vk.Client, stream string, opts ...Option) *Transport {
 	for _, opt := range opts {
 		opt(t)
 	}
+	// A message becomes claimable after claimIdle; checking more often than
+	// that is wasted work, and checking less often than the block time would
+	// make an idle Receive slower to recover abandoned messages than it is
+	// to notice new ones.
+	t.claimEvery = min(t.block, t.claimIdle)
 	return t
 }
 
@@ -314,9 +325,11 @@ func (t *Transport) xadd(name, payload, metadata string, attempt int) vk.Complet
 
 // Receive returns the next message. It first claims messages that other
 // consumers left pending for longer than the claim idle time, then reads new
-// messages, waiting up to the block time each round. It returns when ctx is
-// done or after Close (qumsg.ErrTransportClosed); queued messages stay in the
-// stream.
+// messages, waiting up to the block time each round. Claiming runs at most
+// once per block time (or claim idle time, if shorter), and again right away
+// while it keeps finding messages, so a busy consumer does not pay an extra
+// XAUTOCLAIM per message. It returns when ctx is done or after Close
+// (qumsg.ErrTransportClosed); queued messages stay in the stream.
 func (t *Transport) Receive(ctx context.Context) (qumsg.Delivery, error) {
 	for {
 		if t.closed.Load() {
@@ -329,12 +342,17 @@ func (t *Transport) Receive(ctx context.Context) (qumsg.Delivery, error) {
 			return nil, err
 		}
 
-		d, err := t.claim(ctx)
-		if err != nil || d != nil {
-			return d, err
+		if now := time.Now(); now.UnixNano() >= t.nextClaim.Load() {
+			d, err := t.claim(ctx)
+			if err != nil || d != nil {
+				// Found one: there may be more, so the next Receive claims
+				// again without waiting.
+				return d, err
+			}
+			t.nextClaim.Store(now.Add(t.claimEvery).UnixNano())
 		}
 
-		d, err = t.read(ctx)
+		d, err := t.read(ctx)
 		if err != nil || d != nil {
 			return d, err
 		}

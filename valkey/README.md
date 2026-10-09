@@ -80,13 +80,13 @@ Cada mensaje es una entrada del stream con cuatro campos: `name` (el alias), `pa
 | Operación | Comandos |
 | --- | --- |
 | `Send` | `XADD` |
-| `Receive` | `XAUTOCLAIM` para recuperar mensajes abandonados y, si no hay, `XREADGROUP` |
+| `Receive` | `XAUTOCLAIM` para recuperar mensajes abandonados (como mucho una vez por `WithBlock`) y, si no hay, `XREADGROUP` |
 | `Ack` | `XACK` |
 | `Nack` | `XADD` del mismo mensaje y sus metadatos con `attempt + 1` y `XACK` del original |
 
 - **Grupo de consumidores.** Todos los transportes con el mismo stream y grupo se reparten los mensajes: cada uno lo procesa un solo consumidor. El grupo se crea al primer `Receive` y lee el stream desde el principio, así que no se pierden los mensajes enviados antes de arrancar el primer worker.
 - **Reintentos.** `Nack` vuelve a añadir el mensaje al final del stream con el intento incrementado, y se entrega de nuevo en cuanto un worker queda libre. No hay retraso entre reintentos.
-- **Consumidores caídos.** Un mensaje recibido y nunca confirmado queda pendiente. Cuando lleva más tiempo que `WithClaimIdle` sin confirmarse, otro consumidor lo reclama con `XAUTOCLAIM` y cuenta esa entrega como un intento más. `WithClaimIdle` debe ser mayor que el handler más lento; si no, un mensaje en curso se procesará dos veces.
+- **Consumidores caídos.** Un mensaje recibido y nunca confirmado queda pendiente. Cuando lleva más tiempo que `WithClaimIdle` sin confirmarse, otro consumidor lo reclama con `XAUTOCLAIM` y cuenta esa entrega como un intento más. `WithClaimIdle` debe ser mayor que el handler más lento; si no, un mensaje en curso se procesará dos veces. `Receive` busca mensajes que reclamar como mucho una vez por `WithBlock` (o por `WithClaimIdle`, si es menor), y seguido mientras siga encontrando, así que un consumidor ocupado no paga un `XAUTOCLAIM` por mensaje y uno que se recupera de una caída los reclama todos.
 - **Entrega al menos una vez.** Si un proceso cae después del handler y antes de `XACK`, o entre los dos comandos de `Nack`, el mensaje se procesará otra vez. Los handlers deben tolerar duplicados.
 - **Mensajes que no se pueden decodificar.** Si el alias no está registrado o el payload o los metadatos no se pueden decodificar, se entrega un `valkey.UndecodableMessage` con el nombre, el payload y el error. Normalmente no tiene handler, así que falla con `qumsg.ErrNoHandler`, agota sus intentos y llega al `FailureHandler` de `Consume`. Un mensaje corrupto no detiene a los workers.
 - **Contexto.** `valkey-go` solo interrumpe un comando bloqueante al vencer un deadline, no al cancelarse el contexto. Por eso `Receive` bloquea en tramos de `WithBlock` y revisa entre uno y otro si el contexto se ha cancelado o el transporte se ha cerrado.
