@@ -311,6 +311,23 @@ func TestPointerTypeRegistersItsAlias(t *testing.T) {
 	}
 }
 
+// namedPointer is a defined pointer type: it has no methods, so it is not a
+// NamedMessage, and the pointer built to probe it is a *pointerNamed, not a
+// namedPointer.
+type namedPointer *pointerNamed
+
+func TestDefinedPointerTypeDoesNotPanic(t *testing.T) {
+	if err := qumsg.TypeOf[namedPointer]().Err(); err != nil {
+		t.Fatalf("TypeOf: got %v, want no error", err)
+	}
+
+	bus := qumsg.New()
+	mustRegister(t, bus, func(context.Context, namedPointer) error { return nil })
+	if err := bus.Dispatch(t.Context(), namedPointer(&pointerNamed{})); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRegisterDuringDispatchesIsRaceFree(t *testing.T) {
 	bus := qumsg.New()
 	mustRegister(t, bus, func(context.Context, productCreated) error { return nil })

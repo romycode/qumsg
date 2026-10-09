@@ -6,6 +6,12 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Corregido
+
+- `Consume` ya no respeta `AllowNoHandler`: un mensaje recibido sin handlers (por ejemplo un `valkey.UndecodableMessage`) falla con `ErrNoHandler` y llega al `FailureHandler`, en vez de confirmarse y perderse en silencio. `Dispatch` no cambia.
+- `memory.Transport.Send` con el contexto ya cancelado siempre devuelve su error, en vez de encolar o fallar al azar.
+- `TypeOf` y `Register` con un tipo puntero definido (`type P *T`) ya no entran en pánico.
+
 ### Cambiado
 
 - **Incompatible:** el enrutado pasa del bus a un `Router`. `bus.Route[T](t)` y `bus.RouteTypes(t, types...)` se sustituyen por `router.Route[T](t)` y `router.RouteTypes(t, types...)` sobre un `qumsg.NewRouter()`, que el bus recibe con la opción `WithRouter`.

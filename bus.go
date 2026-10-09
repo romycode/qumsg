@@ -161,7 +161,7 @@ func New(opts ...Option) *Bus {
 	}
 
 	b.dispatch = b.chain(b.sendOrHandle)
-	b.consume = b.chain(b.handle)
+	b.consume = b.chain(b.handleReceived)
 	b.middlewares = nil
 
 	return b
@@ -249,12 +249,25 @@ func (b *Bus) sendOrHandle(ctx context.Context, message any) error {
 }
 
 func (b *Bus) handle(ctx context.Context, message any) error {
+	return b.handleWith(ctx, message, b.allowNoHandler)
+}
+
+// handleReceived handles a message received by Consume. A received message
+// without handlers is always an error, even with AllowNoHandler: acknowledging
+// it would silently lose a message that someone sent on purpose, for example
+// one the transport could not decode. AllowNoHandler is about dispatching
+// notifications that may have no subscribers.
+func (b *Bus) handleReceived(ctx context.Context, message any) error {
+	return b.handleWith(ctx, message, false)
+}
+
+func (b *Bus) handleWith(ctx context.Context, message any, allowNoHandler bool) error {
 	if message == nil {
 		return ErrNilMessage
 	}
 	r, ok := b.lookup(message)
 	if !ok {
-		if b.allowNoHandler {
+		if allowNoHandler {
 			return nil
 		}
 		return fmt.Errorf("%w: %T", ErrNoHandler, message)
@@ -294,21 +307,25 @@ func checkType[T any]() (name string, named bool, err error) {
 func messageName[T any]() (name string, named bool, err error) {
 	typ := reflect.TypeFor[T]()
 
+	// Set up before building the sample, so nothing below can escape as a
+	// panic: TypeOf promises never to fail.
+	defer func() {
+		if r := recover(); r != nil {
+			name, named, err = "", true, fmt.Errorf("%w: %s: %v", ErrNamePanic, typ, r)
+		}
+	}()
+
 	var sample T
 	if typ.Kind() == reflect.Pointer {
-		sample = reflect.New(typ.Elem()).Interface().(T)
+		// Convert rather than assert: typ may be a named pointer type, which
+		// the *Elem returned by reflect.New is not.
+		sample = reflect.New(typ.Elem()).Convert(typ).Interface().(T)
 	}
 
 	m, ok := any(sample).(NamedMessage)
 	if !ok {
 		return "", false, nil
 	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			name, named, err = "", true, fmt.Errorf("%w: %s: %v", ErrNamePanic, typ, r)
-		}
-	}()
 
 	return m.Name(), true, nil
 }

@@ -172,7 +172,7 @@ El bus no sabe si un mensaje es un comando o un evento. Por defecto, un mensaje 
 
 | Opción | Efecto |
 | --- | --- |
-| `AllowNoHandler()` | Un mensaje sin handlers no es un error: `Dispatch` devuelve `nil`. |
+| `AllowNoHandler()` | Un mensaje sin handlers no es un error: `Dispatch` devuelve `nil`. No afecta a `Consume`: un mensaje recibido sin handlers falla con `ErrNoHandler` y llega al `FailureHandler`. |
 | `ContinueOnError()` | Se ejecutan todos los handlers aunque alguno falle, y sus errores se devuelven unidos con `errors.Join`; si solo falla uno, se devuelve sin envolver. |
 | `WithMiddleware(mws...)` | Añade middleware; ver [Middleware](#middleware). |
 
@@ -496,7 +496,7 @@ Los errores de un handler se devuelven sin envolver. Los errores propios del bus
 
 | Error | Cuándo |
 | --- | --- |
-| `ErrNoHandler` | `Dispatch` con un tipo sin handlers, salvo con `AllowNoHandler`. |
+| `ErrNoHandler` | `Dispatch` con un tipo sin handlers, salvo con `AllowNoHandler`; `Consume` con un mensaje sin handlers, siempre. |
 | `ErrNilMessage` | `Dispatch(ctx, nil)`. |
 | `ErrNilHandler` | `Register` con un handler `nil`. |
 | `ErrInterfaceType` | `Register` con `T` interfaz: nunca coincidiría con el tipo concreto de un mensaje. |

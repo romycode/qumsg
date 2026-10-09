@@ -133,6 +133,33 @@ func TestConsumeDropsFailedMessagesWithoutFailureHandler(t *testing.T) {
 	}
 }
 
+// AllowNoHandler is about Dispatch: a message that Consume receives and no
+// handler takes must reach the failure handler, not be acknowledged and lost.
+func TestConsumeIgnoresAllowNoHandler(t *testing.T) {
+	tr := memory.New()
+	sendAll(t, tr, 1)
+
+	worker := qumsg.New(qumsg.AllowNoHandler())
+	if err := worker.Dispatch(t.Context(), job{}); err != nil {
+		t.Fatalf("Dispatch still honors AllowNoHandler: got %v, want nil", err)
+	}
+
+	var gotMsg any
+	var gotErr error
+	err := worker.Consume(t.Context(), tr,
+		qumsg.WithMaxAttempts(2),
+		qumsg.WithFailureHandler(func(_ context.Context, msg any, err error) {
+			gotMsg, gotErr = msg, err
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMsg != (job{N: 1}) || !errors.Is(gotErr, qumsg.ErrNoHandler) {
+		t.Fatalf("failure handler got (%v, %v), want (job{1}, ErrNoHandler)", gotMsg, gotErr)
+	}
+}
+
 func TestConsumeFinishesInFlightMessagesOnCancel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		tr := memory.New()
