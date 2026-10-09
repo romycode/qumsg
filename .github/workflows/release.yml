@@ -1,0 +1,74 @@
+# Segunda mitad de un release. Al subir la etiqueta del núcleo (vX.Y.Z),
+# sube el require de valkey/go.mod a esa versión, comprueba que el módulo
+# compila y pasa sus tests contra el núcleo publicado (sin go.work), hace
+# commit en main y etiqueta valkey/vX.Y.Z sobre ese commit, como pide el
+# proceso de CLAUDE.md. Las etiquetas valkey/* no casan con el patrón.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # El núcleo es privado: sin proxy ni sumdb, y git autenticado con el
+  # GITHUB_TOKEN (ver el paso "Acceso a módulos privados").
+  GOPRIVATE: github.com/romycode/*
+
+jobs:
+  valkey:
+    name: Require y etiqueta de valkey
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Acceso a módulos privados
+        run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
+      - name: La etiqueta está en main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" HEAD; then
+            echo "::error::$GITHUB_REF_NAME no está en main"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/valkey/$GITHUB_REF_NAME" >/dev/null; then
+            echo "::error::valkey/$GITHUB_REF_NAME ya existe"
+            exit 1
+          fi
+      - name: Subir el require
+        working-directory: valkey
+        env:
+          GOWORK: "off"
+        run: |
+          go get "github.com/romycode/qumsg@$GITHUB_REF_NAME"
+          go mod tidy
+          git diff --stat
+      - name: vet y tests contra el núcleo publicado
+        working-directory: valkey
+        env:
+          GOWORK: "off"
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+          go test -race ./...
+      - name: Commit y etiqueta
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git commit -am "build(valkey): require qumsg $GITHUB_REF_NAME"
+          fi
+          git tag -a "valkey/$GITHUB_REF_NAME" -m "valkey $GITHUB_REF_NAME"
+          git push origin HEAD:main "valkey/$GITHUB_REF_NAME"
+          echo "valkey/$GITHUB_REF_NAME en $(git rev-parse --short HEAD)" >> "$GITHUB_STEP_SUMMARY"
