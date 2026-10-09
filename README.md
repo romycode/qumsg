@@ -318,9 +318,10 @@ go worker.Consume(ctx, transport) // en otro proceso con un transporte externo
 err := producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 ```
 
-- `Router.Route[T]` envía los mensajes del tipo exacto `T` a un transporte, y `RouteTypes` hace lo mismo con una [lista de tipos](#familias-de-mensajes). Cada tipo va a un solo transporte (`ErrAlreadyRouted`), con las mismas reglas que `Register` para el alias. `RouteTypes` enruta todos los tipos o ninguno.
+- `Router.Route[T]` envía los mensajes del tipo exacto `T` a un transporte, y `RouteTypes` hace lo mismo con una [lista de tipos](#familias-de-mensajes). Cada tipo va a un solo transporte (`ErrAlreadyRouted`), con las mismas reglas que `Register` para el alias. `RouteTypes` enruta todos los tipos o ninguno. El router compara transportes con `==`, así que el tipo del transporte debe ser comparable (`ErrUncomparableTransport`); usa un puntero, como `memory.New` y `valkey.New`.
 - Un mensaje enrutado **se procesa en local y además se envía**, como si la ruta fuera su último handler: `Dispatch` ejecuta el middleware, los handlers locales de su tipo, si los hay, y después lo entrega al transporte. Un tipo enrutado no necesita handlers locales (nunca da `ErrNoHandler`). Si un handler local falla, el mensaje no se envía, salvo con `ContinueOnError`, que lo envía igualmente y une los errores.
-- Lo que recibe `Consume` se procesa en local aunque su tipo esté enrutado: nunca se vuelve a enviar. Por eso el productor y el worker pueden compartir el mismo router, o la misma función que configura el bus.
+- Lo que recibe `Consume` se procesa en local aunque su tipo esté enrutado: nunca se vuelve a enviar. Por eso el productor y el worker pueden compartir el mismo router y las mismas opciones de `New`.
+- Comparte las opciones, no los handlers del trabajo asíncrono. Si el productor registra el mismo handler que el worker para un tipo enrutado, ese handler se ejecuta dos veces: en el productor, dentro de `Dispatch`, y otra vez en el worker. Registra en el productor solo lo que deba correr en el momento del envío.
 
 El contexto no viaja por el transporte: `Consume` despacha con su propio contexto, no con el de quien llamó a `Dispatch` en el productor. Los valores que deban acompañar al mensaje se llevan como [metadatos](#metadatos).
 
@@ -505,6 +506,7 @@ Los errores de un handler se devuelven sin envolver. Los errores propios del bus
 | `ErrDuplicateName` | Otro tipo ya usa ese alias en el bus. |
 | `ErrNilTransport` | `Router.Route` o `Router.RouteTypes` con un transporte `nil`. |
 | `ErrAlreadyRouted` | El tipo ya va a otro transporte en el mismo router. |
+| `ErrUncomparableTransport` | `Router.Route` o `Router.RouteTypes` con un transporte cuyo tipo no es comparable (un struct por valor con un slice o un mapa). |
 | `ErrNoRoutes` | `Consume` de un `Decoder` al que el router del bus no envía ningún tipo. |
 | `ErrZeroType` | Un `Type` vacío, no creado con `TypeOf`. |
 | `ErrTransportClosed` | `Send` o `Receive` sobre un transporte cerrado. `Consume` lo trata como una parada normal. |

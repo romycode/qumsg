@@ -62,6 +62,12 @@ func (r *Router) RouteTypes(t Transport, types ...Type) error {
 	if t == nil {
 		return ErrNilTransport
 	}
+	// Transports are compared with == here and in typesFor; comparing two
+	// interfaces holding the same uncomparable type panics. Once only
+	// comparable transports are stored, comparing any t against them is safe.
+	if typ := reflect.TypeOf(t); !typ.Comparable() {
+		return fmt.Errorf("%w: %s", ErrUncomparableTransport, typ)
+	}
 	for _, typ := range types {
 		if err := typ.Err(); err != nil {
 			return err

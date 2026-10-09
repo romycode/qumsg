@@ -13,6 +13,11 @@ var (
 	// ErrNilTransport is returned by Router.Route and Router.RouteTypes when
 	// the transport is nil.
 	ErrNilTransport = errors.New("qumsg: nil transport")
+	// ErrUncomparableTransport is returned by Router.Route and
+	// Router.RouteTypes when the dynamic type of the transport is not
+	// comparable, such as a struct value with a slice or map field. The
+	// router compares transports with ==, which would panic; use a pointer.
+	ErrUncomparableTransport = errors.New("qumsg: transport type is not comparable")
 )
 
 // Transport moves messages between the bus that sends them and the bus that

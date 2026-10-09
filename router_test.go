@@ -9,6 +9,34 @@ import (
 	"github.com/romycode/qumsg/memory"
 )
 
+// valueTransport is not comparable: a slice field and value receivers.
+type valueTransport struct{ sent []qumsg.Envelope }
+
+func (valueTransport) Send(context.Context, qumsg.Envelope) error { return nil }
+func (valueTransport) Receive(context.Context) (qumsg.Delivery, error) {
+	return nil, qumsg.ErrTransportClosed
+}
+
+func TestRouteRejectsUncomparableTransports(t *testing.T) {
+	router := qumsg.NewRouter()
+
+	// Without the check, routing the type a second time compares two
+	// valueTransport interfaces with == and panics.
+	for range 2 {
+		if err := router.Route[job](valueTransport{}); !errors.Is(err, qumsg.ErrUncomparableTransport) {
+			t.Fatalf("got %v, want ErrUncomparableTransport", err)
+		}
+	}
+	if err := router.RouteTypes(valueTransport{}, qumsg.TypeOf[userCreated]()); !errors.Is(err, qumsg.ErrUncomparableTransport) {
+		t.Fatalf("RouteTypes: got %v, want ErrUncomparableTransport", err)
+	}
+
+	// A pointer to the same type is comparable.
+	if err := router.Route[job](&valueTransport{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRoutedMessagesAreHandledAndSent(t *testing.T) {
 	tr := memory.New()
 	router := qumsg.NewRouter()
