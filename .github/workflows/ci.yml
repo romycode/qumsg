@@ -1,0 +1,70 @@
+# Lo mismo que `make check`: formato, go vet y tests unitarios y de
+# integración de los dos módulos del workspace, con -race.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # El módulo valkey requiere el núcleo publicado, que es privado. El
+  # go.work lo sustituye por el directorio local, así que no se descarga;
+  # GOPRIVATE evita consultas al proxy y a la sumdb si llegara a pedirlo.
+  GOPRIVATE: github.com/romycode/*
+
+jobs:
+  lint:
+    name: Formato y vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: valkey/go.sum
+      - name: gofmt
+        run: |
+          files="$(gofmt -l *.go memory valkey)"
+          if [ -n "$files" ]; then
+            echo "Sin formatear:"
+            echo "$files"
+            exit 1
+          fi
+      - name: go vet
+        run: |
+          go vet ./... ./valkey/...
+          go vet -tags integration ./valkey/...
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    services:
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 1s
+          --health-timeout 1s
+          --health-retries 30
+    env:
+      VALKEY_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: valkey/go.sum
+      - name: Unitarios
+        run: go test -race ./... ./valkey/...
+      - name: Integración (Valkey)
+        run: go test -race -tags integration ./valkey/...

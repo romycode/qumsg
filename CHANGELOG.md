@@ -20,6 +20,7 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ### Añadido
 
+- CI en GitHub Actions para cada PR y cada push a `main`: formato, `go vet` y tests unitarios y de integración (con un servicio de Valkey) de los dos módulos, con `-race`.
 - `Router` (`NewRouter`, `Route[T]`, `RouteTypes`) y la opción `WithRouter`. Cada tipo va a un solo transporte (`ErrAlreadyRouted`) y `RouteTypes` enruta todos los tipos o ninguno.
 - `Consume` procesa en local lo que recibe aunque su tipo esté enrutado, así que productor y worker pueden crear el bus con las mismas opciones.
 - Interfaz `Decoder` para transportes que necesitan conocer los tipos: `Consume` les pasa con `Accept` los tipos que el router les envía, o devuelve `ErrNoRoutes` si no hay ninguno. `valkey.Transport` la implementa.
