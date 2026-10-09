@@ -54,6 +54,23 @@ func TestSendBlocksWhenFull(t *testing.T) {
 	})
 }
 
+func TestSendWithCanceledContextNeverEnqueues(t *testing.T) {
+	// Repeated because, with room in the queue, an unchecked select picks
+	// between enqueueing and failing at random.
+	tr := memory.New()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for range 50 {
+		if err := tr.Send(ctx, qumsg.NewEnvelope("a")); !errors.Is(err, context.Canceled) {
+			t.Fatalf("got %v, want Canceled", err)
+		}
+	}
+	if tr.Len() != 0 {
+		t.Fatalf("%d messages were enqueued despite the canceled context", tr.Len())
+	}
+}
+
 func TestSendUnblocksWhenThereIsRoom(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		tr := memory.New(memory.WithCapacity(1))

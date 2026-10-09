@@ -72,6 +72,11 @@ func (t *Transport) enqueue(ctx context.Context, d *delivery) error {
 		return qumsg.ErrTransportClosed
 	default:
 	}
+	// Likewise a canceled context never enqueues: with room in the queue, the
+	// select below would pick between both cases at random.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	select {
 	case t.queue <- d:
