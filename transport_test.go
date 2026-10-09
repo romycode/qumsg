@@ -146,8 +146,10 @@ func TestConsumeIgnoresAllowNoHandler(t *testing.T) {
 
 	var gotMsg any
 	var gotErr error
+	// One attempt: sendAll already closed the transport, and memory discards
+	// messages negatively acknowledged after Close.
 	err := worker.Consume(t.Context(), tr,
-		qumsg.WithMaxAttempts(2),
+		qumsg.WithMaxAttempts(1),
 		qumsg.WithFailureHandler(func(_ context.Context, msg any, err error) {
 			gotMsg, gotErr = msg, err
 		}),

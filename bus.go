@@ -71,7 +71,8 @@ func WithMiddleware(middlewares ...Middleware) Option {
 
 // AllowNoHandler makes Dispatch return nil instead of ErrNoHandler for a
 // message without handlers, as fits notifications that may have no
-// subscribers.
+// subscribers. It does not apply to Consume: a received message without
+// handlers always fails with ErrNoHandler and reaches the failure handler.
 func AllowNoHandler() Option {
 	return func(b *Bus) { b.allowNoHandler = true }
 }
