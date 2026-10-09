@@ -50,16 +50,6 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    services:
-      valkey:
-        image: valkey/valkey:8
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 1s
-          --health-timeout 1s
-          --health-retries 30
     env:
       VALKEY_ADDR: localhost:6379
     steps:
@@ -70,6 +60,31 @@ jobs:
           cache-dependency-path: valkey/go.sum
       - name: Acceso a módulos privados
         run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
+      # La misma imagen que compose.yaml. Se arranca a mano en vez de como
+      # contenedor de servicio para poder probar otros registros si Docker
+      # Hub falla (un servicio solo admite una imagen y aborta el job).
+      - name: Arrancar Valkey
+        run: |
+          for image in valkey/valkey:8 mirror.gcr.io/valkey/valkey:8 public.ecr.aws/docker/library/valkey:8; do
+            if docker pull -q "$image"; then
+              echo "Imagen: $image"
+              docker run -d --name valkey -p 6379:6379 "$image"
+              break
+            fi
+            echo "::warning::No se pudo descargar $image"
+          done
+          if ! docker inspect valkey >/dev/null 2>&1; then
+            echo "::error::Ningún registro sirvió la imagen de Valkey"
+            exit 1
+          fi
+          for _ in $(seq 1 30); do
+            if docker exec valkey valkey-cli ping 2>/dev/null | grep -q PONG; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Valkey no respondió a PING en 30 s"
+          exit 1
       - name: Unitarios
         run: go test -race ./... ./valkey/...
       - name: Integración (Valkey)
