@@ -6,6 +6,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.6.0] - 2026-10-09
+
+El enrutado sale del bus a un `Router` compartido por productor y worker, y los transportes que guardan bytes aprenden los tipos de ese router. Incluye correcciones de `Consume`, del transporte en memoria y de Valkey, y CI en GitHub Actions. El módulo de Valkey se etiqueta como `valkey/v0.6.0` en el commit siguiente, que sube su `require` del núcleo.
+
 ### Corregido
 
 - `Consume` ya no respeta `AllowNoHandler`: un mensaje recibido sin handlers (por ejemplo un `valkey.UndecodableMessage`) falla con `ErrNoHandler` y llega al `FailureHandler`, en vez de confirmarse y perderse en silencio. `Dispatch` no cambia.
@@ -96,7 +100,8 @@ Primera versión: bus de mensajes síncrono en proceso. Requiere Go 1.27+.
 - Uso concurrente seguro una vez configurado, sin asignaciones de memoria en el camino de dispatch.
 - Ejemplos del README verificados como tests (`example_test.go`) y benchmarks ejecutables en un contenedor con recursos limitados (`docker compose run --rm bench`).
 
-[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.5.0...HEAD
+[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/romycode/qumsg/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/romycode/qumsg/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/romycode/qumsg/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/romycode/qumsg/compare/v0.2.0...v0.3.0
