@@ -3,7 +3,7 @@ module github.com/romycode/qumsg/valkey
 go 1.27.1
 
 require (
-	github.com/romycode/qumsg v0.7.0
+	github.com/romycode/qumsg v0.8.0
 	github.com/valkey-io/valkey-go v1.0.78
 )
 
