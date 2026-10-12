@@ -6,6 +6,11 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Añadido
+
+- Módulo `github.com/romycode/qumsg/postgres`: un transporte sobre una tabla de PostgreSQL con pgx/v5. `Send` puede insertar dentro de la transacción de la aplicación (`WithDB` con un ejecutor que tome la transacción del contexto) y avisa con `NOTIFY`; `Receive` reclama con `FOR UPDATE SKIP LOCKED`, espera con `LISTEN/NOTIFY` y sondeo, y recupera los mensajes cuyo lease caducó. Cada entrega renueva su lease mientras no se liquida, y `Ack`, `Nack` y `Complete` van cercados por dueño e intento (`ErrLeaseLost`). `Nack` reintenta con espera (`WithBackoff`). Incluye mensajes únicos por clave (`Deduplicated`), envío diferido (`ContextWithDelay`), `Schema` con el DDL de la tabla, `UndecodableMessage` y `Propagator` + `Complete` para terminar el mensaje en la transacción del handler.
+- `AGENTS.md` con la guía del proyecto para agentes; `CLAUDE.md` apunta a él.
+
 ## [0.6.0] - 2026-10-09
 
 El enrutado sale del bus a un `Router` compartido por productor y worker, y los transportes que guardan bytes aprenden los tipos de ese router. Incluye correcciones de `Consume`, del transporte en memoria y de Valkey, y CI en GitHub Actions. El módulo de Valkey se etiqueta como `valkey/v0.6.0` en el commit siguiente, que sube su `require` del núcleo.

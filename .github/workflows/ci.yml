@@ -1,5 +1,5 @@
 # Lo mismo que `make check`: formato, go vet y tests unitarios y de
-# integración de los dos módulos del workspace, con -race.
+# integración de los tres módulos del workspace, con -race.
 name: CI
 
 on:
@@ -31,12 +31,14 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache-dependency-path: valkey/go.sum
+          cache-dependency-path: |
+            valkey/go.sum
+            postgres/go.sum
       - name: Acceso a módulos privados
         run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
       - name: gofmt
         run: |
-          files="$(gofmt -l *.go memory valkey)"
+          files="$(gofmt -l *.go memory valkey postgres)"
           if [ -n "$files" ]; then
             echo "Sin formatear:"
             echo "$files"
@@ -44,20 +46,23 @@ jobs:
           fi
       - name: go vet
         run: |
-          go vet ./... ./valkey/...
-          go vet -tags integration ./valkey/...
+          go vet ./... ./valkey/... ./postgres/...
+          go vet -tags integration ./valkey/... ./postgres/...
 
   test:
     name: Tests
     runs-on: ubuntu-latest
     env:
       VALKEY_ADDR: localhost:6379
+      POSTGRES_URL: postgres://qumsg:qumsg@localhost:5432/qumsg?sslmode=disable
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache-dependency-path: valkey/go.sum
+          cache-dependency-path: |
+            valkey/go.sum
+            postgres/go.sum
       - name: Acceso a módulos privados
         run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
       # La misma imagen que compose.yaml. Se arranca a mano en vez de como
@@ -86,6 +91,10 @@ jobs:
           echo "::error::Valkey no respondió a PING en 30 s"
           exit 1
       - name: Unitarios
-        run: go test -race ./... ./valkey/...
+        run: go test -race ./... ./valkey/... ./postgres/...
+      - name: Arrancar PostgreSQL
+        run: docker compose up -d --wait postgres
       - name: Integración (Valkey)
         run: go test -race -tags integration ./valkey/...
+      - name: Integración (PostgreSQL)
+        run: go test -race -tags integration ./postgres/...

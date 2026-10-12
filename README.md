@@ -63,6 +63,7 @@ Los ejemplos utilizan paquetes estándar como `context`, `fmt`, `log/slog` y `ti
 - Ejecución asíncrona opcional: rutas hacia un transporte, consumo con workers, reintentos, apagado ordenado y metadatos que viajan con el mensaje.
 - Un transporte en memoria (`qumsg/memory`).
 - Un transporte sobre Valkey Streams en el módulo [`qumsg/valkey`](valkey/README.md), con persistencia, varios procesos y serialización JSON.
+- Un transporte sobre una tabla de PostgreSQL en el módulo [`qumsg/postgres`](postgres/README.md): envío dentro de la transacción de la aplicación, leases renovados mientras dura el handler, reintentos con espera, mensajes únicos por clave y `LISTEN/NOTIFY`.
 
 ## Mensajes e identidad
 
@@ -318,7 +319,7 @@ go worker.Consume(ctx, transport) // en otro proceso con un transporte externo
 err := producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 ```
 
-- `Router.Route[T]` envía los mensajes del tipo exacto `T` a un transporte, y `RouteTypes` hace lo mismo con una [lista de tipos](#familias-de-mensajes). Cada tipo va a un solo transporte (`ErrAlreadyRouted`), con las mismas reglas que `Register` para el alias. `RouteTypes` enruta todos los tipos o ninguno. El router compara transportes con `==`, así que el tipo del transporte debe ser comparable (`ErrUncomparableTransport`); usa un puntero, como `memory.New` y `valkey.New`.
+- `Router.Route[T]` envía los mensajes del tipo exacto `T` a un transporte, y `RouteTypes` hace lo mismo con una [lista de tipos](#familias-de-mensajes). Cada tipo va a un solo transporte (`ErrAlreadyRouted`), con las mismas reglas que `Register` para el alias. `RouteTypes` enruta todos los tipos o ninguno. El router compara transportes con `==`, así que el tipo del transporte debe ser comparable (`ErrUncomparableTransport`); usa un puntero, como `memory.New`, `valkey.New` y `postgres.New`.
 - Un mensaje enrutado **se procesa en local y además se envía**, como si la ruta fuera su último handler: `Dispatch` ejecuta el middleware, los handlers locales de su tipo, si los hay, y después lo entrega al transporte. Un tipo enrutado no necesita handlers locales (nunca da `ErrNoHandler`). Si un handler local falla, el mensaje no se envía, salvo con `ContinueOnError`, que lo envía igualmente y une los errores.
 - Lo que recibe `Consume` se procesa en local aunque su tipo esté enrutado: nunca se vuelve a enviar. Por eso el productor y el worker pueden compartir el mismo router y las mismas opciones de `New`.
 - Comparte las opciones, no los handlers del trabajo asíncrono. Si el productor registra el mismo handler que el worker para un tipo enrutado, ese handler se ejecuta dos veces: en el productor, dentro de `Dispatch`, y otra vez en el worker. Registra en el productor solo lo que deba correr en el momento del envío.
@@ -458,6 +459,7 @@ Los mensajes viven solo en memoria y se pierden si el proceso termina. Úsalo pa
 | Transporte | Módulo | Documentación |
 | --- | --- | --- |
 | Valkey Streams | `github.com/romycode/qumsg/valkey` | [valkey/README.md](valkey/README.md) |
+| Tabla de PostgreSQL | `github.com/romycode/qumsg/postgres` | [postgres/README.md](postgres/README.md) |
 
 Cada transporte externo es un módulo Go aparte, para que el núcleo no dependa de sus clientes.
 
@@ -529,13 +531,13 @@ El `Makefile` gestiona el entorno local; `make` sin argumentos lista los objetiv
 
 ```sh
 make test               # tests unitarios de todos los módulos
-make test-integration   # levanta Valkey en Docker y ejecuta los tests de integración
+make test-integration   # levanta Valkey y PostgreSQL en Docker y ejecuta los tests de integración
 make check              # formato, go vet y todos los tests: lo necesario antes de un commit
 make cover              # cobertura de todos los paquetes
 make bench BENCH=Parallel BENCH_CPUS=4   # benchmarks en un contenedor con recursos limitados
 make down               # para los contenedores
 ```
 
-El repositorio es un workspace de Go (`go.work`) con dos módulos: el núcleo en la raíz y `valkey/`. Desde la raíz, `./...` solo incluye el núcleo, así que el módulo de Valkey se indica aparte.
+El repositorio es un workspace de Go (`go.work`) con tres módulos: el núcleo en la raíz, `valkey/` y `postgres/`. Desde la raíz, `./...` solo incluye el núcleo, así que los módulos de Valkey y PostgreSQL se indican aparte. La guía para agentes y colaboradores está en [`AGENTS.md`](AGENTS.md).
 
 Los ejemplos de este README están en `example_test.go` como funciones `Example` y se verifican con `go test`. Los tests unitarios de `bus_test.go`, `transport_test.go` y `memory/memory_test.go` cubren la resolución por tipo exacto, el orden de handlers y middleware, la parada en el primer error, los alias y sus colisiones, la propagación del contexto y la cancelación, la conservación de errores, los dispatches concurrentes, el consumo con reintentos, fallos, varios workers y apagado ordenado, y el transporte en memoria. Los tests con tiempo o bloqueos usan `testing/synctest`, así que son deterministas.
