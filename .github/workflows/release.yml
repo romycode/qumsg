@@ -80,13 +80,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Notas: la sección de esta versión en CHANGELOG.md, hasta la siguiente.
-          notes=$(awk -v v="${GITHUB_REF_NAME#v}" '
-            index($0, "## [" v "]") == 1 { f = 1; next }
-            f && /^## \[/ { exit }
-            f' CHANGELOG.md)
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "La release $GITHUB_REF_NAME ya existe" >> "$GITHUB_STEP_SUMMARY"
-          else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes "${notes:-Ver CHANGELOG.md}"
-          fi
+          .github/scripts/github-release.sh "$GITHUB_REF_NAME"

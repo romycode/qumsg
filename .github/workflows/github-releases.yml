@@ -1,0 +1,28 @@
+# Crea las releases de GitHub que falten para las etiquetas core existentes
+# (vX.Y.Z), con las notas de su sección del CHANGELOG. Se lanza a mano
+# (workflow_dispatch). Para etiquetas nuevas, el workflow Release ya crea
+# la suya; este workflow solo rellena las que no existan. Va de la más
+# antigua a la más nueva, para que la más nueva quede como Latest.
+name: GitHub releases
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  releases:
+    name: Crear las releases que falten
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Crear las releases que falten
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while read -r tag; do
+            .github/scripts/github-release.sh "$tag"
+          done < <(git tag -l 'v*.*.*' --sort=v:refname)
