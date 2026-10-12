@@ -685,6 +685,9 @@ func (t *Transport) Close() error {
 // to the context of its handler (see Propagator).
 const leaseMetadata = "qumsg.postgres.lease"
 
+// lockNotAvailable is the SQLSTATE of a NOWAIT that found the row locked.
+const lockNotAvailable = "55P03"
+
 type leaseInfo struct {
 	Table   string `json:"table"`
 	ID      int64  `json:"id"`
@@ -793,7 +796,9 @@ func (d *delivery) Context(parent context.Context) (context.Context, context.Can
 }
 
 // startHeartbeat renews the lease every third of it until the delivery is
-// settled or the lease is lost.
+// settled or the lease is lost. A renewal blocked by a row lock (NOWAIT,
+// SQLSTATE 55P03) is never counted as renewed, but it only cancels the
+// delivery once safeUntil runs out; any other failure cancels at once.
 func (d *delivery) startHeartbeat(claimedAt time.Time) {
 	t := d.transport
 	ctx, cancel := context.WithCancel(context.Background())
@@ -832,9 +837,14 @@ func (d *delivery) startHeartbeat(claimedAt time.Time) {
 			if ctx.Err() != nil {
 				return
 			}
+			if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == lockNotAvailable {
+				// The handler's own transaction holds the row: this is not a
+				// renewal, so safeUntil does not move, but while it is still
+				// ahead the lease is ours. Wait for the next tick; the expiry
+				// timer cancels if the lock outlasts the margin.
+				continue
+			}
 			if err != nil || tag.RowsAffected() == 0 {
-				// Even NOWAIT is uncertain: the transaction could roll back
-				// after the lease expires. Cancel conservatively.
 				d.loseLease(ErrLeaseLost)
 				return
 			}
@@ -961,7 +971,7 @@ func newStatements(table string) statements {
 				EXTRACT(EPOCH FROM (SELECT min(locked_at) FROM {t} WHERE locked_at IS NOT NULL)
 					+ ` + micros("$1") + ` - now())::float8 + 0.001`),
 		// NOWAIT: a renewal never queues behind a transaction holding the
-		// row (see startHeartbeat).
+		// row; startHeartbeat tolerates that while the lease is still safe.
 		renew: r.Replace(`UPDATE {t} SET locked_at = now()
 			WHERE id = (SELECT id FROM {t} WHERE {fence} FOR UPDATE NOWAIT)`),
 		// The outer SELECT sees the table as it was before the statement,
