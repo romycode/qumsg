@@ -6,6 +6,15 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Añadido
+
+- Núcleo: `DeliveryContext`, `ReleasableDelivery`, `ErrDeliveryLost`, `Attempt(ctx)`, `WithUnlimitedAttempts()` y `WithCancelOnShutdown()`. La liquidación tiene un límite de cinco segundos y perder una entrega no detiene otros consumidores.
+- PostgreSQL: `Own(ctx, db)` bloquea y comprueba la propiedad dentro de la transacción del handler; `Release` devuelve trabajo interrumpido sin contar intento. Cada reclamación usa un token único para impedir que un contexto antiguo vuelva a ser válido tras liberar y reclamar con el mismo intento.
+
+### Corregido
+
+- PostgreSQL cancela el contexto de la entrega ante renovación fallida o incierta, antes del vencimiento estimado del lease. Una fila bloqueada no cuenta como renovación: su transacción podría revertirse y dejar expuesto un lease caducado. Las renovaciones tienen deadline y se esperan al liquidar.
+
 ## [0.7.0] - 2026-10-12
 
 Transporte PostgreSQL transaccional. El núcleo y los transportes Valkey y PostgreSQL comparten la versión `v0.7.0`; el workflow de release actualiza las dependencias de los transportes y publica sus etiquetas.

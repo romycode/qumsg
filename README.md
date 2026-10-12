@@ -417,7 +417,11 @@ err := worker.Consume(ctx, transport,
 
 Con un solo worker y sin reintentos, los mensajes se procesan en el orden del transporte. Con varios workers o con reintentos, el orden no está garantizado.
 
-Al cancelar el contexto, `Consume` deja de recibir y espera a los mensajes en curso. Estos terminan con un contexto que conserva los valores del original pero no se cancela con él, así que un handler no queda a medias por el apagado. Un mensaje recibido siempre se confirma.
+Al cancelar el contexto, `Consume` deja de recibir y, por defecto, espera a los mensajes en curso. Estos conservan los valores del contexto pero no su cancelación. `WithCancelOnShutdown()` cancela también los handlers: si devuelven error al interrumpirse, se usa `Release` cuando la entrega implementa `ReleasableDelivery`, o `Nack` en otro caso. `Release` permite al transporte devolver el mensaje sin contar un intento fallido. La liquidación usa un contexto separado con un límite de cinco segundos; los handlers deben atender la cancelación.
+
+`WithUnlimitedAttempts()` mantiene los reintentos sin límite, útil para limpieza o para handlers que guardan su propio fallo terminal y terminan el mensaje transaccionalmente. `qumsg.Attempt(ctx)` devuelve el intento actual dentro del handler o middleware (cero fuera de `Consume`). La última opción entre `WithMaxAttempts` y `WithUnlimitedAttempts` determina la política.
+
+Un transporte puede implementar `DeliveryContext` para cancelar el handler cuando pierde la propiedad de la entrega. `Consume` usa ese contexto incluso con el apagado por defecto, llama a su función de limpieza y no detiene otros workers por un error de liquidación que envuelva `ErrDeliveryLost`. PostgreSQL implementa ambos protocolos; memoria y Valkey mantienen su comportamiento de entrega habitual.
 
 Cualquier otro error del transporte en `Receive`, `Ack` o `Nack` detiene todos los workers y `Consume` lo devuelve.
 

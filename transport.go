@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 var (
+	// ErrDeliveryLost means this delivery no longer owns its message.
+	// Consume settles it without stopping unrelated workers.
+	ErrDeliveryLost = errors.New("qumsg: delivery lost")
 	// ErrTransportClosed is returned by Transport.Receive when the transport
 	// is closed and has no more messages. Consume treats it as a normal stop.
 	ErrTransportClosed = errors.New("qumsg: transport closed")
@@ -45,6 +49,25 @@ type Delivery interface {
 	Nack(ctx context.Context) error
 }
 
+// DeliveryContext optionally binds handling to a delivery's ownership.
+// The returned cleanup function must be called after settlement.
+type DeliveryContext interface {
+	Context(parent context.Context) (context.Context, context.CancelFunc)
+}
+
+// ReleasableDelivery can return interrupted work without counting an attempt.
+type ReleasableDelivery interface {
+	Release(context.Context) error
+}
+
+type attemptKey struct{}
+
+// Attempt returns the current delivery attempt, or zero outside Consume.
+func Attempt(ctx context.Context) int {
+	n, _ := ctx.Value(attemptKey{}).(int)
+	return n
+}
+
 // Decoder is implemented by transports that must know the message types to
 // decode what they receive, such as one that stores messages as bytes.
 // Consume calls Accept, before receiving, with the types that the router of
@@ -62,9 +85,23 @@ type FailureHandler func(ctx context.Context, message any, err error)
 type ConsumeOption func(*consumeConfig)
 
 type consumeConfig struct {
-	workers     int
-	maxAttempts int
-	onFailure   FailureHandler
+	workers          int
+	maxAttempts      int
+	onFailure        FailureHandler
+	cancelOnShutdown bool
+}
+
+// WithUnlimitedAttempts retries failures until they succeed or Consume stops.
+func WithUnlimitedAttempts() ConsumeOption {
+	return func(c *consumeConfig) { c.maxAttempts = 0 }
+}
+
+// WithCancelOnShutdown cancels in-flight handlers when Consume is canceled.
+// Interrupted deliveries supporting Release return without counting an attempt;
+// other transports use Nack. Handlers must observe cancellation and return.
+// Settlement uses a detached context bounded to five seconds.
+func WithCancelOnShutdown() ConsumeOption {
+	return func(c *consumeConfig) { c.cancelOnShutdown = true }
 }
 
 // WithWorkers sets how many messages are processed concurrently. Default 1.
@@ -103,8 +140,10 @@ func WithFailureHandler(f FailureHandler) ConsumeOption {
 //
 // When ctx is done Consume stops receiving and waits for the messages in
 // flight: their dispatch, Ack and Nack use a context that keeps the values of
-// ctx but is not canceled with it. Any other error from the transport stops
-// Consume and is returned.
+// ctx but is not canceled with it. WithCancelOnShutdown opts into cancellation
+// and release instead. DeliveryContext can cancel handling on ownership loss
+// in either mode. Settlements are bounded to five seconds. Transport errors
+// other than ErrDeliveryLost stop Consume and are returned.
 func (b *Bus) Consume(ctx context.Context, t Transport, opts ...ConsumeOption) error {
 	cfg := consumeConfig{workers: 1, maxAttempts: 3}
 	for _, opt := range opts {
@@ -153,7 +192,7 @@ func (b *Bus) Consume(ctx context.Context, t Transport, opts ...ConsumeOption) e
 				// A received message is always settled, even if ctx was
 				// canceled meanwhile.
 
-				if err := b.settle(context.WithoutCancel(ctx), d, &cfg); err != nil {
+				if err := b.settle(ctx, d, &cfg); err != nil && !errors.Is(err, ErrDeliveryLost) {
 					fail(err)
 					return
 				}
@@ -169,18 +208,36 @@ func (b *Bus) Consume(ctx context.Context, t Transport, opts ...ConsumeOption) e
 // The propagators of the bus restore the metadata of the envelope into ctx
 // before the dispatch.
 func (b *Bus) settle(ctx context.Context, d Delivery, cfg *consumeConfig) error {
+	if !cfg.cancelOnShutdown {
+		ctx = context.WithoutCancel(ctx)
+	}
+	if owned, ok := d.(DeliveryContext); ok {
+		var cleanup context.CancelFunc
+		ctx, cleanup = owned.Context(ctx)
+		defer cleanup()
+	}
 	e := d.Envelope()
 	ctx = b.extract(ctx, e)
+	ctx = context.WithValue(ctx, attemptKey{}, d.Attempt())
 	err := b.consume(ctx, e.Message())
+	settlement, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	switch {
+	case errors.Is(context.Cause(ctx), ErrDeliveryLost), errors.Is(err, ErrDeliveryLost):
+		return d.Nack(settlement)
 	case err == nil:
-		return d.Ack(ctx)
-	case d.Attempt() < cfg.maxAttempts:
-		return d.Nack(ctx)
+		return d.Ack(settlement)
+	case cfg.cancelOnShutdown && ctx.Err() != nil:
+		if released, ok := d.(ReleasableDelivery); ok {
+			return released.Release(settlement)
+		}
+		return d.Nack(settlement)
+	case cfg.maxAttempts == 0 || d.Attempt() < cfg.maxAttempts:
+		return d.Nack(settlement)
 	default:
 		if cfg.onFailure != nil {
-			cfg.onFailure(ctx, e.Message(), err)
+			cfg.onFailure(settlement, e.Message(), err)
 		}
-		return d.Ack(ctx)
+		return d.Ack(settlement)
 	}
 }

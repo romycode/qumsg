@@ -279,7 +279,7 @@ func TestPostgresCompleteTransaction(t *testing.T) {
 }
 
 func TestPostgresExpiredLeaseAndFencing(t *testing.T) {
-	for _, operation := range []string{"ack", "nack", "complete"} {
+	for _, operation := range []string{"ack", "nack", "complete", "own", "release"} {
 		t.Run(operation, func(t *testing.T) {
 			pool, table := integrationPool(t)
 			tr := integrationTransport(t, pool, table, postgres.WithLease(time.Hour))
@@ -301,6 +301,10 @@ func TestPostgresExpiredLeaseAndFencing(t *testing.T) {
 				err = stale.Nack(t.Context())
 			case "complete":
 				err = tr.Complete(tr.Propagator().Extract(t.Context(), stale.Envelope()), pool)
+			case "own":
+				err = tr.Own(tr.Propagator().Extract(t.Context(), stale.Envelope()), pool)
+			case "release":
+				err = stale.(qumsg.ReleasableDelivery).Release(t.Context())
 			}
 			if !errors.Is(err, postgres.ErrLeaseLost) {
 				t.Fatalf("got %v, want ErrLeaseLost", err)
@@ -309,6 +313,75 @@ func TestPostgresExpiredLeaseAndFencing(t *testing.T) {
 				t.Fatal("stale owner changed message")
 			}
 		})
+	}
+}
+
+func TestPostgresReleasePreservesAttemptAndFencesOldContext(t *testing.T) {
+	pool, table := integrationPool(t)
+	tr := integrationTransport(t, pool, table)
+	sendIntegration(t, tr, "release")
+	first := receiveIntegration(t, tr)
+	stale := tr.Propagator().Extract(t.Context(), first.Envelope())
+	if err := first.(qumsg.ReleasableDelivery).Release(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	next := receiveIntegration(t, tr)
+	if next.Attempt() != first.Attempt() {
+		t.Fatalf("attempt changed: %d -> %d", first.Attempt(), next.Attempt())
+	}
+	if err := tr.Own(stale, pool); !errors.Is(err, qumsg.ErrDeliveryLost) {
+		t.Fatalf("stale Own = %v", err)
+	}
+	if err := tr.Complete(stale, pool); !errors.Is(err, qumsg.ErrDeliveryLost) {
+		t.Fatalf("stale Complete = %v", err)
+	}
+	if err := tr.Own(tr.Propagator().Extract(t.Context(), next.Envelope()), pool); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresLeaseLossCancelsDelivery(t *testing.T) {
+	pool, table := integrationPool(t)
+	tr := integrationTransport(t, pool, table, postgres.WithLease(300*time.Millisecond))
+	sendIntegration(t, tr, "lost")
+	d := receiveIntegration(t, tr)
+	ctx, cancel := d.(qumsg.DeliveryContext).Context(t.Context())
+	defer cancel()
+	if _, err := pool.Exec(t.Context(), "UPDATE "+table+" SET locked_by = 'other'"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+		if !errors.Is(context.Cause(ctx), qumsg.ErrDeliveryLost) {
+			t.Fatal(context.Cause(ctx))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler not canceled after losing ownership")
+	}
+}
+
+func TestPostgresUncertainRenewalCancelsBeforeExpiry(t *testing.T) {
+	pool, table := integrationPool(t)
+	tr := integrationTransport(t, pool, table, postgres.WithLease(600*time.Millisecond))
+	sendIntegration(t, tr, "uncertain")
+	d := receiveIntegration(t, tr)
+	ctx, cancel := d.(qumsg.DeliveryContext).Context(t.Context())
+	defer cancel()
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	if err := tr.Own(tr.Propagator().Extract(t.Context(), d.Envelope()), tx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+		if !errors.Is(context.Cause(ctx), qumsg.ErrDeliveryLost) {
+			t.Fatal(context.Cause(ctx))
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("uncertain lease was not canceled before expiry")
 	}
 }
 

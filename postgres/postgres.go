@@ -59,7 +59,7 @@ var (
 	// ErrLeaseLost is returned by Ack, Nack and Complete when the message is
 	// no longer leased by this delivery: its lease expired and another
 	// worker reclaimed it. Nothing was changed.
-	ErrLeaseLost = errors.New("postgres: lease lost")
+	ErrLeaseLost = fmt.Errorf("postgres: lease lost: %w", qumsg.ErrDeliveryLost)
 	// ErrNoLease is returned by Complete when ctx does not carry a delivery
 	// of the transport: the bus that consumes it lacks Transport.Propagator,
 	// or Complete was called outside a handler.
@@ -558,7 +558,9 @@ func (t *Transport) claim(ctx context.Context) (*delivery, error) {
 		metadata string
 		attempt  int
 	)
-	err := t.pool.QueryRow(ctx, t.sql.claim, t.owner, t.lease.Microseconds()).Scan(&id, &name, &payload, &metadata, &attempt)
+	owner := t.owner + ":" + rand.Text()
+	claimedAt := time.Now()
+	err := t.pool.QueryRow(ctx, t.sql.claim, owner, t.lease.Microseconds()).Scan(&id, &name, &payload, &metadata, &attempt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -566,15 +568,15 @@ func (t *Transport) claim(ctx context.Context) (*delivery, error) {
 		return nil, fmt.Errorf("postgres: claim: %w", err)
 	}
 
-	d := &delivery{transport: t, id: id, attempt: attempt}
-	d.envelope = t.decode(id, name, payload, metadata, attempt)
-	d.startHeartbeat()
+	d := &delivery{transport: t, id: id, attempt: attempt, owner: owner}
+	d.envelope = t.decode(id, name, payload, metadata, attempt, owner)
+	d.startHeartbeat(claimedAt)
 	return d, nil
 }
 
 // decode builds the envelope of a claimed row, or an UndecodableMessage.
 // Decoded messages carry their lease for Propagator.
-func (t *Transport) decode(id int64, name string, payload []byte, metadata string, attempt int) qumsg.Envelope {
+func (t *Transport) decode(id int64, name string, payload []byte, metadata string, attempt int, owner string) qumsg.Envelope {
 	t.mu.RLock()
 	decode, ok := t.decoders[name]
 	t.mu.RUnlock()
@@ -593,7 +595,7 @@ func (t *Transport) decode(id int64, name string, payload []byte, metadata strin
 	if err != nil {
 		return undecodable(fmt.Errorf("postgres: decode metadata of %s: %w", name, err))
 	}
-	value, _ := json.Marshal(leaseInfo{Table: t.table, ID: id, Attempt: attempt, Owner: t.owner})
+	value, _ := json.Marshal(leaseInfo{Table: t.table, ID: id, Attempt: attempt, Owner: owner})
 	return e.With(leaseMetadata, string(value))
 }
 
@@ -740,59 +742,103 @@ func (t *Transport) Complete(ctx context.Context, db DB) error {
 	return nil
 }
 
+// Own locks the delivery row without completing it. Call inside a transaction
+// to fence writes that must only be performed by the current delivery owner.
+// The lock lasts until that transaction ends. Missing ownership is ErrLeaseLost.
+func (t *Transport) Own(ctx context.Context, db DB) error {
+	lease, ok := ctx.Value(leaseKey{t}).(leaseInfo)
+	if !ok {
+		return ErrNoLease
+	}
+	if db == nil {
+		db = t.db
+	}
+	var id int64
+	err := db.QueryRow(ctx, t.sql.own, lease.ID, lease.Owner, lease.Attempt).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: message %d", ErrLeaseLost, lease.ID)
+	}
+	if err != nil {
+		return fmt.Errorf("postgres: own %d: %w", lease.ID, err)
+	}
+	return nil
+}
+
 type delivery struct {
 	transport *Transport
 	id        int64
 	attempt   int
+	owner     string
 	envelope  qumsg.Envelope
 	settled   atomic.Bool
 
 	stopHeartbeat context.CancelFunc
 	heartbeatDone chan struct{}
+	leaseContext  context.Context
+	loseLease     context.CancelCauseFunc
 }
 
 func (d *delivery) Envelope() qumsg.Envelope { return d.envelope }
 
 func (d *delivery) Attempt() int { return d.attempt }
 
-// lockNotAvailable is what FOR UPDATE NOWAIT raises on a row that another
-// transaction holds.
-const lockNotAvailable = "55P03"
+// Context binds the handler to ownership, independently of Receive's context.
+func (d *delivery) Context(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	stop := context.AfterFunc(d.leaseContext, func() { cancel(context.Cause(d.leaseContext)) })
+	if d.leaseContext.Err() != nil {
+		cancel(context.Cause(d.leaseContext))
+	}
+	return ctx, func() { stop(); cancel(nil) }
+}
 
 // startHeartbeat renews the lease every third of it until the delivery is
 // settled or the lease is lost.
-func (d *delivery) startHeartbeat() {
+func (d *delivery) startHeartbeat(claimedAt time.Time) {
 	t := d.transport
 	ctx, cancel := context.WithCancel(context.Background())
 	d.stopHeartbeat = cancel
 	d.heartbeatDone = make(chan struct{})
 	every := t.lease / 3
+	d.leaseContext, d.loseLease = context.WithCancelCause(context.Background())
 
 	go func() {
 		defer close(d.heartbeatDone)
+		// Count from before the claim/renewal request, not its response: a
+		// slow connection must not extend our estimate of ownership.
+		safeUntil := claimedAt.Add(2 * every)
 		ticker := time.NewTicker(every)
 		defer ticker.Stop()
 		for {
+			expiry := time.NewTimer(time.Until(safeUntil))
 			select {
 			case <-ctx.Done():
+				expiry.Stop()
+				return
+			case <-expiry.C:
+				d.loseLease(ErrLeaseLost)
 				return
 			case <-ticker.C:
 			}
-			rctx, rcancel := context.WithTimeout(ctx, every)
-			tag, err := t.pool.Exec(rctx, t.sql.renew, d.id, t.owner, d.attempt)
-			rcancel()
-			if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == lockNotAvailable {
-				// A transaction holds the row, normally the handler's own
-				// Complete: nobody can reclaim it meanwhile, and the next
-				// renewal tells whether the message is still ours.
-				continue
-			}
-			if err == nil && tag.RowsAffected() == 0 {
-				// Lost or ended: settling tells which.
+			expiry.Stop()
+			if !time.Now().Before(safeUntil) {
+				d.loseLease(ErrLeaseLost)
 				return
 			}
-			// On any other error, retry on the next tick: the lease still
-			// lasts two more.
+			started := time.Now()
+			rctx, rcancel := context.WithDeadline(ctx, safeUntil)
+			tag, err := t.pool.Exec(rctx, t.sql.renew, d.id, d.owner, d.attempt)
+			rcancel()
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil || tag.RowsAffected() == 0 {
+				// Even NOWAIT is uncertain: the transaction could roll back
+				// after the lease expires. Cancel conservatively.
+				d.loseLease(ErrLeaseLost)
+				return
+			}
+			safeUntil = started.Add(2 * every)
 		}
 	}()
 }
@@ -837,11 +883,27 @@ func (d *delivery) Nack(ctx context.Context) error {
 	return nil
 }
 
+// Release returns interrupted work immediately without counting this attempt.
+// Every claim has a fresh owner token, so reusing an attempt cannot defeat fencing.
+func (d *delivery) Release(ctx context.Context) error {
+	if !d.settle() {
+		return nil
+	}
+	t := d.transport
+	if err := t.fenced(ctx, "release", t.sql.release, d); err != nil {
+		return err
+	}
+	if _, err := t.pool.Exec(ctx, notifySQL, t.channel); err != nil {
+		return fmt.Errorf("postgres: notify release of %d: %w", d.id, err)
+	}
+	return nil
+}
+
 // fenced runs a settlement whose statement reports whether it changed the
 // row and whether the row still exists.
 func (t *Transport) fenced(ctx context.Context, op, sql string, d *delivery, extra ...any) error {
 	var changed, exists bool
-	args := append([]any{d.id, t.owner, d.attempt}, extra...)
+	args := append([]any{d.id, d.owner, d.attempt}, extra...)
 	if err := t.pool.QueryRow(ctx, sql, args...).Scan(&changed, &exists); err != nil {
 		return fmt.Errorf("postgres: %s %d: %w", op, d.id, err)
 	}
@@ -863,10 +925,13 @@ type statements struct {
 	ack      string
 	nack     string
 	complete string
+	release  string
+	own      string
 }
 
 // fence matches the row only while this delivery holds its lease: same
-// owner and same attempt, which grows on every claim.
+// unique claim owner and same attempt. Release may decrement the attempt,
+// but a subsequent claim never reuses the owner token.
 const fence = `id = $1 AND locked_by = $2 AND attempt = $3`
 
 func newStatements(table string) statements {
@@ -909,5 +974,10 @@ func newStatements(table string) statements {
 				WHERE {fence} RETURNING 1)
 			SELECT EXISTS (SELECT 1 FROM done), EXISTS (SELECT 1 FROM {t} WHERE id = $1)`),
 		complete: r.Replace(`DELETE FROM {t} WHERE {fence}`),
+		own:      r.Replace(`SELECT id FROM {t} WHERE {fence} FOR UPDATE`),
+		release: r.Replace(`WITH done AS (
+			UPDATE {t} SET locked_by = NULL, locked_at = NULL, available_at = now(), attempt = attempt - 1
+			WHERE {fence} RETURNING 1)
+			SELECT EXISTS (SELECT 1 FROM done), EXISTS (SELECT 1 FROM {t} WHERE id = $1)`),
 	}
 }

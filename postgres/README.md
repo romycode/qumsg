@@ -176,7 +176,9 @@ _ = worker.Register(func(ctx context.Context, msg VerifyResource) error {
 })
 ```
 
-`Complete` borra la fila cercada por su lease (dueño e intento). Si otro worker la ha reclamado devuelve `postgres.ErrLeaseLost` y no borra nada: devuelve el error para que la transacción se revierta. Sin `Propagator` en el bus, o fuera de un handler, devuelve `postgres.ErrNoLease`. Tras confirmarse, el `Ack` de `Consume` no encuentra la fila y no hace nada.
+`Complete` borra la fila cercada por su lease (token de reclamación e intento). Si otro worker la ha reclamado devuelve `postgres.ErrLeaseLost` y no borra nada: devuelve el error para que la transacción se revierta. Sin `Propagator` en el bus, o fuera de un handler, devuelve `postgres.ErrNoLease`. Tras confirmarse, el `Ack` de `Consume` no encuentra la fila y no hace nada.
+
+`Own(ctx, db)` comprueba el mismo lease y bloquea la fila con `FOR UPDATE` sin borrarla. Úsalo al principio de una transacción corta que registra efectos parciales, antes de realizar esos efectos fuera de la base de datos. Así, una entrega antigua no puede registrar nuevos efectos después de que otra la reclame. El bloqueo dura hasta terminar la transacción. No mantengas transacciones abiertas durante el procesado multimedia o las llamadas remotas: si una renovación encuentra la fila bloqueada, cancela conservadoramente el contexto del handler.
 
 `Propagator` funciona con los metadatos del sobre: el transporte añade a cada entrega la entrada `qumsg.postgres.lease` y el propagador la pasa al `ctx`. Su `Inject` no hace nada, así que el lease nunca viaja a los mensajes que el handler despache.
 
@@ -216,12 +218,12 @@ err := bus.Dispatch(postgres.ContextWithDelay(ctx, time.Hour), RemoveObject{Key:
 | `Complete` | `DELETE` cercado con el `DB` del handler. |
 
 - **Reparto.** `FOR UPDATE SKIP LOCKED` hace que dos workers nunca reclamen la misma fila: cada mensaje lo procesa un solo worker mientras su lease esté vigente.
-- **Leases y latido.** Cada entrega guarda dueño (`WithOwner`, único por proceso), hora e intento. Mientras no se liquida, una goroutine renueva `locked_at` cada tercio de `WithLease`, así que un handler de varios minutos conserva su mensaje. Si la fila está bloqueada por una transacción (normalmente el `Complete` del propio handler), la renovación no espera y cuenta como hecha.
+- **Leases y latido.** Cada entrega guarda un token único (`WithOwner` más un sufijo aleatorio por reclamación), hora e intento. Mientras no se liquida, una goroutine renueva `locked_at` cada tercio de `WithLease`. Una renovación fallida, incierta o sin fila cancela el contexto del handler con `ErrLeaseLost`; una fila bloqueada también es incierta, porque su transacción podría revertirse. El deadline se calcula desde antes de la petición y deja un tercio del lease de margen. La liquidación detiene y espera al latido.
 - **Workers caídos.** Si un worker deja de renovar (se cae, se cuelga o pierde la base de datos) durante más de `WithLease`, otro `Receive` reclama el mensaje y cuenta esa entrega como un intento más, así que un mensaje que tumba al proceso acaba llegando al `FailureHandler`.
-- **Fencing.** `Ack`, `Nack`, la renovación y `Complete` solo actúan si `locked_by` y `attempt` siguen siendo los de la entrega (`attempt` crece en cada reclamación). Si otro worker tiene el mensaje, devuelven `postgres.ErrLeaseLost` sin cambiar nada; si la fila ya no existe (la borró `Complete` u otro worker), `Ack` y `Nack` devuelven `nil`.
+- **Fencing.** `Ack`, `Nack`, `Release`, `Own`, la renovación y `Complete` solo actúan si `locked_by` y `attempt` siguen siendo los de la entrega. El token cambia incluso cuando `Release` descuenta el intento. Si otro worker tiene el mensaje, devuelven `postgres.ErrLeaseLost` sin cambiar nada; si la fila ya no existe, `Ack`, `Nack` y `Release` devuelven `nil`.
 - **Reintentos e intentos.** `Attempt()` es el número de entregas, empezando en 1. `Consume` hace `Nack` mientras `Attempt() < WithMaxAttempts` (3 por defecto); el mensaje vuelve a estar disponible tras `WithBackoff(attempt)` (por defecto 1 s, doblando hasta 5 min). En el último intento, `Consume` llama al `FailureHandler` y hace `Ack`, que borra la fila.
 - **Espera con LISTEN/NOTIFY.** El primer `Receive` abre una conexión propia, fuera del pool y con su configuración, y hace `LISTEN qumsg_<tabla>` hasta `Close`. Un `Receive` sin nada que reclamar espera a una notificación, a que venza el próximo `available_at`, a que caduque el lease más antiguo o a `WithPollInterval` (5 s), lo que llegue antes. Si la conexión de `LISTEN` falla, se reintenta cada segundo y entretanto `Receive` sondea. Debe llegar a PostgreSQL directamente o a través de un pooler en modo sesión: PgBouncer en modo transacción no mantiene `LISTEN`.
-- **Apagado.** Al cancelar el `ctx` de `Consume`, `Receive` vuelve enseguida; los mensajes ya recibidos se despachan y se liquidan con `context.WithoutCancel` y su lease se sigue renovando hasta entonces.
+- **Apagado.** Por defecto se termina el trabajo en curso. Con `qumsg.WithCancelOnShutdown()` se cancela el handler; si devuelve error, `Release` libera el mensaje inmediatamente y descuenta el intento. La liquidación usa un contexto separado limitado a cinco segundos. `qumsg.WithUnlimitedAttempts()` permite reintentar limpieza sin límite y `qumsg.Attempt(ctx)` permite aplicar una política terminal en el propio handler y su transacción.
 - **Entrega al menos una vez.** Si un proceso cae después del handler y antes del `Ack`, o pierde el lease, el mensaje se procesará otra vez. Los handlers deben tolerar duplicados, o terminar el mensaje con `Complete` en su transacción.
 - **Mensajes que no se pueden decodificar.** Si el alias no está aceptado o el payload o los metadatos no se pueden decodificar, se entrega un `postgres.UndecodableMessage` con el id de la fila, el nombre, el payload y el error. Normalmente no tiene handler, así que falla con `qumsg.ErrNoHandler`, agota sus intentos y llega al `FailureHandler` de `Consume`.
 
@@ -250,11 +252,11 @@ Además de los errores de PostgreSQL, que se devuelven envueltos con la operaci�
 | `qumsg.ErrNilMessage` | `Send` con un sobre sin mensaje. |
 | `qumsg.ErrTransportClosed` | `Send` o `Receive` después de `Close`. `Close` no borra mensajes ni cierra el pool. |
 
-`Consume` se detiene con cualquier error del transporte, también con un `ErrLeaseLost` de `Ack` o `Nack`. Con el latido, eso solo pasa si el worker no pudo renovar durante todo un lease (p. ej. sin conexión a la base de datos); reinicia `Consume` en ese caso.
+`postgres.ErrLeaseLost` envuelve `qumsg.ErrDeliveryLost`: `Consume` no detiene otros workers por esa pérdida de propiedad. Los demás errores de liquidación siguen deteniendo el consumidor.
 
 ## Limitaciones
 
-- El `ctx` del handler no se cancela al perder el lease: el núcleo no lo permite (ver "Pendiente"). El fencing impide que el handler liquide un mensaje que ya no es suyo, pero no que siga trabajando.
+- La cancelación es cooperativa: un handler que ignore el contexto puede seguir realizando efectos externos. El fencing protege las escrituras transaccionales, no una llamada externa ya iniciada.
 - `Send` no informa de si un mensaje deduplicado se descartó.
 - Un mensaje en curso también cuenta para la deduplicación: un `Send` con su clave mientras se procesa se descarta, aunque el handler ya haya leído el estado.
 - No hay orden garantizado entre mensajes más allá de `available_at, id`, y un reintento o un lease caducado lo altera.
@@ -270,9 +272,9 @@ Pasos para sustituir `internal/platform/jobs` de delusic (colas `resource_jobs` 
    - `CleanupResource{OrgID, ResourceID, StorageKey}`, `Name() = "resources.cleanup"`, `DedupKey() = "cleanup:" + ResourceID`. La clave de almacenamiento viaja en el payload en vez de en un `ObjectKeyStamp`.
 3. **Router y bus compartidos** en `cmd/api` y `cmd/worker`: un transporte por tabla con `postgres.WithDB(executor)` (el `database.DB` del diseño del ejecutor), `router.Route[VerifyResource](verifications)` y `router.Route[CleanupResource](cleanups)`, y un bus `qumsg.New(qumsg.WithRouter(router))`. Para el trazado, un `Propagator` que inyecte `traceparent` en los metadatos sustituye al `TraceStamp`.
 4. **Envío dentro de las transacciones del servicio.** En `Service.Complete`, dentro de `WithinTransaction`, tras `StartProcessing`: `bus.Dispatch(ctx, VerifyResource{…})` en lugar de `tx.Jobs.Enqueue`. En `Service.Delete`, tras borrar: `bus.Dispatch(postgres.ContextWithDelay(ctx, delay), CleanupResource{…})`, con `delay` = TTL de la URL prefirmada si el recurso seguía subiendo y 0 si no (lo que hoy calcula `cleanupAt`). El ejecutor resuelve la transacción del `ctx`, así que mensaje y escritura se confirman o se revierten juntos.
-5. **Workers.** `resources-processing`: `worker.Register(verifier.Handle)` con `func(ctx, VerifyResource) error` y `worker.Consume(ctx, verifications, qumsg.WithMaxAttempts(5), qumsg.WithFailureHandler(failVerification))`. El `maxAttempts` del `Verifier` pasa a `WithMaxAttempts` y el `FailureHandler` marca el recurso como fallido con `msgAttempts`. `resources-cleanup`: `Register(cleaner.Handle)` y `Consume` con un `WithMaxAttempts` alto (el actual no tiene límite) y un `FailureHandler` que registre el objeto huérfano. Opciones de las colas actuales: `WithLease(2*time.Minute)` y `WithBackoff(jobs.DefaultBackoff)` (10 s doblando hasta 10 min).
+5. **Workers.** Ambos consumen con `qumsg.WithUnlimitedAttempts()` y `qumsg.WithCancelOnShutdown()`. El verificador consulta `qumsg.Attempt(ctx)` y registra el fallo terminal junto con `Complete` en su transacción; si esa escritura falla, el mensaje se conserva para reintentar. La limpieza reintenta sin límite. Opciones de las colas actuales: `WithLease(2*time.Minute)` y `WithBackoff(jobs.DefaultBackoff)` (10 s doblando hasta 10 min).
 6. **Idempotencia.** `FinishVerification` y `FailVerification` ya solo cambian recursos en `processing`, y el `Cleaner` ya tolera repetir el borrado; con eso basta para la entrega al menos una vez. Si se quiere conservar la atomicidad actual de "escritura final + fin del job", el bus del worker añade `transport.Propagator()` y esos métodos llaman a `transport.Complete(ctx, executor)` dentro de su `WithinTransaction` en lugar de `queue.Complete`.
-7. **Lo que se pierde** respecto a `platform/jobs`: el `SubjectLocker` (lock consultivo por recurso alrededor del handler, que hoy excluye un borrado concurrente), la cancelación del `ctx` del handler al perder el lease, la liberación sin contar intento al apagar y las métricas `jobs.handle.duration`/`jobs.claim.errors` (que pasarían a un middleware del bus). Ver "Pendiente".
+7. **Lo que debe conservar la aplicación:** el `SubjectLocker` (lock consultivo por recurso alrededor del handler para excluir un borrado concurrente) y las métricas del procesado. El transporte proporciona cancelación al perder el lease y liberación sin contar intento al apagar; no sustituye la exclusión por recurso.
 
 ## Desarrollo
 
@@ -301,9 +303,9 @@ Hecho:
 
 Verificación: `make check` pasa con PostgreSQL y Valkey aislados (formato, vet, unitarios e integración con `-race`), incluidos los cinco ejemplos ejecutables. El workflow de release verifica cada transporte contra el núcleo publicado, actualiza su dependencia a `v0.7.0` y crea las etiquetas `valkey/v0.7.0` y `postgres/v0.7.0`.
 
-Cambios propuestos al núcleo (no hechos; requieren una versión nueva de `qumsg`):
+Cambios implementados después de `v0.7.0`, pendientes de una versión nueva del núcleo y del transporte:
 
-- **Cancelar el handler al perder el lease.** `Consume` despacha con un `ctx` que el transporte no controla. Propuesta: una interfaz opcional `interface{ Context(parent context.Context) context.Context }` en `Delivery`, que `settle` use para derivar el `ctx` del dispatch; el transporte lo cancelaría al perder el lease.
-- **No detener `Consume` por un lease perdido.** Hoy cualquier error de `Ack`/`Nack` para todos los workers. Propuesta: un error centinela del núcleo (p. ej. `qumsg.ErrDeliveryLost`) que los transportes envuelvan y que `Consume` ignore (el mensaje ya es de otro).
-- **Liberar sin contar intento al apagar.** El modelo de `Consume` siempre termina lo recibido; si se quisiera devolver los mensajes al cancelar, haría falta un `Release` opcional en `Delivery` y que `Consume` cancelara el dispatch.
-- **Resultado de la deduplicación.** `Transport.Send` solo devuelve `error`; saber si un mensaje se descartó exigiría otra firma o un valor en el `ctx`.
+- `DeliveryContext`, `ErrDeliveryLost`, `ReleasableDelivery`, `WithCancelOnShutdown`, `WithUnlimitedAttempts` y `Attempt(ctx)` en el núcleo.
+- Cancelación del handler ante renovación incierta, `Release` sin contar intento, token único por reclamación y `Own` transaccional en PostgreSQL.
+
+Sigue pendiente informar del resultado de deduplicación: `Transport.Send` solo devuelve `error`.

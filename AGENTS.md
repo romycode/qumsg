@@ -75,6 +75,8 @@ Detalles:
 
 ## Errores
 
+Desde el trabajo posterior a v0.7.0: `DeliveryContext` permite cancelar el handler al perder propiedad; `ErrDeliveryLost` en liquidación no para otros consumidores. `WithCancelOnShutdown` opta por cancelar y `Release` (o `Nack` si no existe), con liquidación separada limitada a cinco segundos; el apagado por defecto sigue drenando. `WithUnlimitedAttempts` y `Attempt(ctx)` permiten políticas terminales transaccionales en el handler. PostgreSQL usa token único por reclamación (prefijo `WithOwner` más sufijo aleatorio), `Release` descuenta intento sin permitir ABA, y `Own` bloquea sin borrar dentro de la transacción. El latido cancela ante cualquier renovación incierta, incluso `NOWAIT`: un bloqueo no renueva el lease y su transacción podría revertirse. Estas reglas sustituyen los detalles anteriores sobre dueño fijo, NOWAIT como renovación y errores de lease que paran el consumidor.
+
 Los errores del bus y de los transportes son variables `Err*` exportadas, envueltas con `%w` y el tipo o mensaje afectado; los errores de los handlers se devuelven **sin envolver**. Mantén ambas propiedades: los tests las comprueban con `errors.Is`/`errors.As` y con igualdad directa.
 
 ## Git
