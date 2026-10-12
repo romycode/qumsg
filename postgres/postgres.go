@@ -797,8 +797,9 @@ func (d *delivery) Context(parent context.Context) (context.Context, context.Can
 
 // startHeartbeat renews the lease every third of it until the delivery is
 // settled or the lease is lost. A renewal blocked by a row lock (NOWAIT,
-// SQLSTATE 55P03) is never counted as renewed, but it only cancels the
-// delivery once safeUntil runs out; any other failure cancels at once.
+// SQLSTATE 55P03) is retried every sixth of the lease until it succeeds; it
+// cancels the delivery only when safeUntil runs out. Any other failure
+// cancels at once.
 func (d *delivery) startHeartbeat(claimedAt time.Time) {
 	t := d.transport
 	ctx, cancel := context.WithCancel(context.Background())
@@ -830,25 +831,40 @@ func (d *delivery) startHeartbeat(claimedAt time.Time) {
 				d.loseLease(ErrLeaseLost)
 				return
 			}
-			started := time.Now()
-			rctx, rcancel := context.WithDeadline(ctx, safeUntil)
-			tag, err := t.pool.Exec(rctx, t.sql.renew, d.id, d.owner, d.attempt)
-			rcancel()
-			if ctx.Err() != nil {
-				return
-			}
-			if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == lockNotAvailable {
-				// The handler's own transaction holds the row: this is not a
-				// renewal, so safeUntil does not move, but while it is still
-				// ahead the lease is ours. Wait for the next tick; the expiry
-				// timer cancels if the lock outlasts the margin.
-				continue
-			}
-			if err != nil || tag.RowsAffected() == 0 {
-				d.loseLease(ErrLeaseLost)
-				return
+			// A renewal blocked by a row lock (NOWAIT, SQLSTATE 55P03: usually
+			// the handler's own Own/Complete transaction) is not a renewal and
+			// does not move safeUntil. Retry shortly instead of waiting for the
+			// next tick, until it succeeds or safeUntil runs out.
+			var started time.Time
+			for {
+				started = time.Now()
+				rctx, rcancel := context.WithDeadline(ctx, safeUntil)
+				tag, err := t.pool.Exec(rctx, t.sql.renew, d.id, d.owner, d.attempt)
+				rcancel()
+				if ctx.Err() != nil {
+					return
+				}
+				if err == nil && tag.RowsAffected() > 0 {
+					break
+				}
+				if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != lockNotAvailable {
+					d.loseLease(ErrLeaseLost)
+					return
+				}
+				retry := time.NewTimer(max(every/6, 10*time.Millisecond))
+				select {
+				case <-ctx.Done():
+					retry.Stop()
+					return
+				case <-retry.C:
+				}
+				if !time.Now().Before(safeUntil) {
+					d.loseLease(ErrLeaseLost)
+					return
+				}
 			}
 			safeUntil = started.Add(2 * every)
+			ticker.Reset(every)
 		}
 	}()
 }
@@ -971,7 +987,7 @@ func newStatements(table string) statements {
 				EXTRACT(EPOCH FROM (SELECT min(locked_at) FROM {t} WHERE locked_at IS NOT NULL)
 					+ ` + micros("$1") + ` - now())::float8 + 0.001`),
 		// NOWAIT: a renewal never queues behind a transaction holding the
-		// row; startHeartbeat tolerates that while the lease is still safe.
+		// row; startHeartbeat retries it while the lease is still safe.
 		renew: r.Replace(`UPDATE {t} SET locked_at = now()
 			WHERE id = (SELECT id FROM {t} WHERE {fence} FOR UPDATE NOWAIT)`),
 		// The outer SELECT sees the table as it was before the statement,

@@ -394,6 +394,10 @@ func TestPostgresLockedRowDoesNotCancelWhileSafe(t *testing.T) {
 	d := receiveIntegration(t, tr)
 	ctx, cancel := d.(qumsg.DeliveryContext).Context(t.Context())
 	defer cancel()
+	var before time.Time
+	if err := pool.QueryRow(t.Context(), "SELECT locked_at FROM "+table).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := pool.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -406,15 +410,23 @@ func TestPostgresLockedRowDoesNotCancelWhileSafe(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		t.Fatalf("delivery canceled while still safe: %v", context.Cause(ctx))
-	case <-time.After(350 * time.Millisecond):
+	case <-time.After(400 * time.Millisecond):
 	}
 	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	// Past the original safeUntil (600ms) only a real renewal keeps it alive.
 	select {
 	case <-ctx.Done():
 		t.Fatalf("delivery canceled after the lock was released: %v", context.Cause(ctx))
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(800 * time.Millisecond):
+	}
+	var after time.Time
+	if err := pool.QueryRow(t.Context(), "SELECT locked_at FROM "+table).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if !after.After(before) {
+		t.Fatalf("locked_at did not advance: before %v, after %v", before, after)
 	}
 }
 
