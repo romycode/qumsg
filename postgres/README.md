@@ -303,7 +303,7 @@ Hecho:
 
 Verificación: `make check` pasa con PostgreSQL y Valkey aislados (formato, vet, unitarios e integración con `-race`), incluidos los cinco ejemplos ejecutables. El workflow de release verifica cada transporte contra el núcleo publicado, actualiza su dependencia a `v0.7.0` y crea las etiquetas `valkey/v0.7.0` y `postgres/v0.7.0`.
 
-Cambios implementados después de `v0.7.0`, pendientes de una versión nueva del núcleo y del transporte:
+Cambios publicados en `v0.8.0`:
 
 - `DeliveryContext`, `ErrDeliveryLost`, `ReleasableDelivery`, `WithCancelOnShutdown`, `WithUnlimitedAttempts` y `Attempt(ctx)` en el núcleo.
 - Cancelación del handler ante renovación incierta, `Release` sin contar intento, token único por reclamación y `Own` transaccional en PostgreSQL.

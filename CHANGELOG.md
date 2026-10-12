@@ -6,6 +6,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.8.0] - 2026-10-12
+
+Ciclo de vida de entregas: cancelación por pérdida de lease, liberación al apagar e intentos ilimitados. El núcleo y los transportes comparten la versión `v0.8.0`.
+
 ### Añadido
 
 - Núcleo: `DeliveryContext`, `ReleasableDelivery`, `ErrDeliveryLost`, `Attempt(ctx)`, `WithUnlimitedAttempts()` y `WithCancelOnShutdown()`. La liquidación tiene un límite de cinco segundos y perder una entrega no detiene otros consumidores.
