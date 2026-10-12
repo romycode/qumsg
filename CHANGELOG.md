@@ -6,6 +6,14 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.8.1] - 2026-10-12
+
+El núcleo y los transportes comparten la versión `v0.8.1`.
+
+### Corregido
+
+- PostgreSQL: una renovación bloqueada por la propia transacción del handler (`Own`/`Complete`, SQLSTATE `55P03`) ya no cancela la entrega mientras quede margen seguro. No cuenta como renovación ni mueve el límite seguro: se espera al siguiente tick y solo se cancela con `ErrLeaseLost` si el límite se agota o la renovación falla por cualquier otro motivo.
+
 ## [0.8.0] - 2026-10-12
 
 Ciclo de vida de entregas: cancelación por pérdida de lease, liberación al apagar e intentos ilimitados. El núcleo y los transportes comparten la versión `v0.8.0`.
