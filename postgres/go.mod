@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/romycode/qumsg v0.5.1-0.20261009215406-a17440cdfc72
+	github.com/romycode/qumsg v0.7.0
 )
 
 require (
