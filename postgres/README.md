@@ -287,7 +287,7 @@ go test -race -tags integration ./postgres/...
 
 ## Pendiente
 
-Implementación terminada el 2026-10-12; integración local en `main`, sin publicar.
+Implementación terminada el 2026-10-12 e incluida en `v0.7.0`.
 
 Hecho:
 
@@ -299,11 +299,7 @@ Hecho:
 - Servicio `postgres` en `compose.yaml`, objetivos del `Makefile` para los tres módulos y CI; release prepara las etiquetas de Valkey y PostgreSQL sobre el mismo commit.
 - Identificadores SQL entrecomillados: también funcionan nombres de tabla reservados como `select`, cubierto por una prueba de regresión contra PostgreSQL.
 
-Verificación: `make check` pasa con PostgreSQL y Valkey aislados (formato, vet, unitarios e integración con `-race`), incluidos los cinco ejemplos ejecutables. Los workflows se han revisado localmente; su ejecución remota queda para la publicación.
-
-Pendiente de publicación (no necesario para usar el workspace local):
-
-- El `go.mod` requiere el pseudo-version del commit `chore: release v0.6.0` (`v0.5.1-0.20261009215406-a17440cdfc72`) porque la etiqueta `v0.6.0` no está publicada en el remoto; al etiquetarla, `go get github.com/romycode/qumsg@v0.6.0` (lo hará el workflow de release).
+Verificación: `make check` pasa con PostgreSQL y Valkey aislados (formato, vet, unitarios e integración con `-race`), incluidos los cinco ejemplos ejecutables. El workflow de release verifica cada transporte contra el núcleo publicado, actualiza su dependencia a `v0.7.0` y crea las etiquetas `valkey/v0.7.0` y `postgres/v0.7.0`.
 
 Cambios propuestos al núcleo (no hechos; requieren una versión nueva de `qumsg`):
 

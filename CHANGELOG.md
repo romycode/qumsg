@@ -6,6 +6,10 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.7.0] - 2026-10-12
+
+Transporte PostgreSQL transaccional. El núcleo y los transportes Valkey y PostgreSQL comparten la versión `v0.7.0`; el workflow de release actualiza las dependencias de los transportes y publica sus etiquetas.
+
 ### Añadido
 
 - Módulo `github.com/romycode/qumsg/postgres`: un transporte sobre una tabla de PostgreSQL con pgx/v5. `Send` puede insertar dentro de la transacción de la aplicación (`WithDB` con un ejecutor que tome la transacción del contexto) y avisa con `NOTIFY`; `Receive` reclama con `FOR UPDATE SKIP LOCKED`, espera con `LISTEN/NOTIFY` y sondeo, y recupera los mensajes cuyo lease caducó. Cada entrega renueva su lease mientras no se liquida, y `Ack`, `Nack` y `Complete` van cercados por dueño e intento (`ErrLeaseLost`). `Nack` reintenta con espera (`WithBackoff`). Incluye mensajes únicos por clave (`Deduplicated`), envío diferido (`ContextWithDelay`), `Schema` con el DDL de la tabla, `UndecodableMessage` y `Propagator` + `Complete` para terminar el mensaje en la transacción del handler.
@@ -105,7 +109,8 @@ Primera versión: bus de mensajes síncrono en proceso. Requiere Go 1.27+.
 - Uso concurrente seguro una vez configurado, sin asignaciones de memoria en el camino de dispatch.
 - Ejemplos del README verificados como tests (`example_test.go`) y benchmarks ejecutables en un contenedor con recursos limitados (`docker compose run --rm bench`).
 
-[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.6.0...HEAD
+[Sin publicar]: https://github.com/romycode/qumsg/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/romycode/qumsg/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/romycode/qumsg/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/romycode/qumsg/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/romycode/qumsg/compare/v0.3.0...v0.4.0
