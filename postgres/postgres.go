@@ -797,9 +797,9 @@ func (d *delivery) Context(parent context.Context) (context.Context, context.Can
 
 // startHeartbeat renews the lease every third of it until the delivery is
 // settled or the lease is lost. A renewal blocked by a row lock (NOWAIT,
-// SQLSTATE 55P03) is retried every sixth of the lease until it succeeds; it
-// cancels the delivery only when safeUntil runs out. Any other failure
-// cancels at once.
+// SQLSTATE 55P03) is retried every sixth of the heartbeat interval (lease/18,
+// at least 10ms) until it succeeds; it cancels the delivery only when
+// safeUntil runs out. Any other failure cancels at once.
 func (d *delivery) startHeartbeat(claimedAt time.Time) {
 	t := d.transport
 	ctx, cancel := context.WithCancel(context.Background())
@@ -851,7 +851,9 @@ func (d *delivery) startHeartbeat(claimedAt time.Time) {
 					d.loseLease(ErrLeaseLost)
 					return
 				}
-				retry := time.NewTimer(max(every/6, 10*time.Millisecond))
+				// Never sleep past safeUntil: cancel when it arrives.
+				wait := max(min(max(every/6, 10*time.Millisecond), time.Until(safeUntil)), 0)
+				retry := time.NewTimer(wait)
 				select {
 				case <-ctx.Done():
 					retry.Stop()
@@ -864,7 +866,9 @@ func (d *delivery) startHeartbeat(claimedAt time.Time) {
 				}
 			}
 			safeUntil = started.Add(2 * every)
-			ticker.Reset(every)
+			// Next tick one interval after this renewal began, not after it
+			// ended, so a slow or retried renewal does not shorten the next budget.
+			ticker.Reset(max(time.Until(started.Add(every)), time.Millisecond))
 		}
 	}()
 }

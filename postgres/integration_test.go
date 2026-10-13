@@ -362,7 +362,8 @@ func TestPostgresLeaseLossCancelsDelivery(t *testing.T) {
 
 func TestPostgresUncertainRenewalCancelsBeforeExpiry(t *testing.T) {
 	pool, table := integrationPool(t)
-	tr := integrationTransport(t, pool, table, postgres.WithLease(600*time.Millisecond))
+	// Ticks every 500ms; safeUntil is 1s after the claim, before the lease ends.
+	tr := integrationTransport(t, pool, table, postgres.WithLease(1500*time.Millisecond))
 	sendIntegration(t, tr, "uncertain")
 	d := receiveIntegration(t, tr)
 	ctx, cancel := d.(qumsg.DeliveryContext).Context(t.Context())
@@ -372,7 +373,7 @@ func TestPostgresUncertainRenewalCancelsBeforeExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(context.Background())
-	// The row stays locked past safeUntil (400ms) until the test ends.
+	// The row stays locked past safeUntil (1s) until the test ends.
 	if err := tr.Own(tr.Propagator().Extract(t.Context(), d.Envelope()), tx); err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +382,7 @@ func TestPostgresUncertainRenewalCancelsBeforeExpiry(t *testing.T) {
 		if !errors.Is(context.Cause(ctx), qumsg.ErrDeliveryLost) {
 			t.Fatal(context.Cause(ctx))
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(1300 * time.Millisecond):
 		t.Fatal("uncertain lease was not canceled before expiry")
 	}
 }
@@ -411,6 +412,15 @@ func TestPostgresLockedRowDoesNotCancelWhileSafe(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatalf("delivery canceled while still safe: %v", context.Cause(ctx))
 	case <-time.After(400 * time.Millisecond):
+	}
+	// Seen from another connection, nothing was renewed while the row was
+	// locked: the 55P03 path ran and did not count as a renewal.
+	var locked time.Time
+	if err := pool.QueryRow(t.Context(), "SELECT locked_at FROM "+table).Scan(&locked); err != nil {
+		t.Fatal(err)
+	}
+	if !locked.Equal(before) {
+		t.Fatalf("locked_at moved while the row was locked: before %v, now %v", before, locked)
 	}
 	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatal(err)
