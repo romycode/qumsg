@@ -6,13 +6,21 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.8.3] - 2026-10-13
+
+El núcleo y los transportes comparten la versión `v0.8.3`.
+
+### Corregido
+
+- PostgreSQL: el reintento de una renovación bloqueada (`55P03`) de `v0.8.2` es cada `lease/18` (un sexto del intervalo de latido, mínimo 10 ms), no cada sexto del lease como indicaban la documentación y el changelog de esa versión. Además, la espera entre reintentos no pasa de `safeUntil`, de modo que la cancelación llega en ese instante, y el siguiente latido se programa un intervalo después del inicio de la renovación, no de su final.
+
 ## [0.8.2] - 2026-10-12
 
 El núcleo y los transportes comparten la versión `v0.8.2`.
 
 ### Corregido
 
-- PostgreSQL: `v0.8.1` solo aplazaba la cancelación cuando la propia transacción del handler (`Own`/`Complete`) bloqueaba la fila durante la renovación (SQLSTATE `55P03`): la entrega seguía perdiéndose al agotarse el límite seguro. Ahora la renovación se reintenta cada sexto del lease (mínimo 10 ms) hasta que se logra, y un éxito mueve el límite seguro como cualquier renovación. Solo se cancela con `ErrLeaseLost` si se agota el límite seguro o la renovación falla por otro motivo.
+- PostgreSQL: `v0.8.1` solo aplazaba la cancelación cuando la propia transacción del handler (`Own`/`Complete`) bloqueaba la fila durante la renovación (SQLSTATE `55P03`): la entrega seguía perdiéndose al agotarse el límite seguro. Ahora la renovación se reintenta cada `lease/18` (mínimo 10 ms; la nota de `v0.8.3` corrige el «sexto del lease» inicial) hasta que se logra, y un éxito mueve el límite seguro como cualquier renovación. Solo se cancela con `ErrLeaseLost` si se agota el límite seguro o la renovación falla por otro motivo.
 
 ## [0.8.1] - 2026-10-12
 
