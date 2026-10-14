@@ -6,6 +6,19 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+## [0.8.4] - 2026-10-14
+
+El núcleo y los transportes comparten la versión `v0.8.4`.
+
+### Corregido
+
+- PostgreSQL: una reclamación lenta (por un bloqueo, un pool que abre conexiones o una máquina cargada) ya no cancela una entrega sana. El límite seguro se cuenta desde antes de la reclamación, pero el primer latido se programaba un intervalo después de su respuesta: si la reclamación tardaba más de `lease/3`, la entrega se cancelaba con `ErrLeaseLost` sin intentar renovar, y si tardaba menos, los reintentos tras un `55P03` tenían menos margen. Ahora el primer latido se programa un intervalo después del inicio de la reclamación, como los siguientes desde el inicio de su renovación.
+- PostgreSQL: `Ack`, `Nack` y `Release` ya no devuelven un `ErrLeaseLost` falso cuando esperan a que la transacción `Complete` del propio handler confirme el borrado. Su comprobación de existencia leía la fila del snapshot anterior a la espera; ahora, en ese caso, vuelven a comprobarla y devuelven `nil` si el mensaje ya terminó.
+
+### Añadido
+
+- PostgreSQL: prueba de integración de estrés del latido y la liquidación (`TestPostgresHeartbeatStress`), con leases cortos, bloqueos aleatorios de `Own`/`Complete` y semilla fija configurable con `QUMSG_STRESS_SEED`.
+
 ## [0.8.3] - 2026-10-13
 
 El núcleo y los transportes comparten la versión `v0.8.3`.
