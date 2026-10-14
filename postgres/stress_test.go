@@ -712,10 +712,14 @@ func stressHandler(t *testing.T, pool *pgxpool.Pool, tr *postgres.Transport, tab
 		if rowAttempt != attempt {
 			t.Errorf("%s: row at attempt %d while canceling attempt %d", key, rowAttempt, attempt)
 		}
-		// Not asserted: a lock taken at any phase should get about lease/3
-		// before safeUntil runs out, but a slow claim shortens the first
-		// budget (TestPostgresSlowClaimRenewsBeforeSafeLimit). The earliest
-		// cancellation after locking is logged instead.
+		// Whatever the phase of the heartbeat when the lock was taken, the
+		// last renewal started at most lease/3 before it, so safeUntil is at
+		// least lease/3 after it, also on the first one after a slow claim
+		// (TestPostgresSlowClaimRenewsBeforeSafeLimit). A quarter of that is
+		// left as margin for scheduling and for locked being read late.
+		if minimum := lease / 3 * 3 / 4; afterLock < minimum {
+			t.Errorf("%s attempt %d: canceled %v after locking, want at least %v (lease %v)", key, attempt, afterLock, minimum, lease)
+		}
 		state.update(key, func(r *stressRecord) {
 			r.canceled = true
 			r.cancelAfterLock = afterLock

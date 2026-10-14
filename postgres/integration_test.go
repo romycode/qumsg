@@ -440,6 +440,141 @@ func TestPostgresLockedRowDoesNotCancelWhileSafe(t *testing.T) {
 	}
 }
 
+// A claim that is slow to come back (here, blocked by a table lock) leaves
+// little of the safe limit, which counts from before the claim request. The
+// first renewal must still come one heartbeat interval after the claim
+// started, like every later one after its renewal started, and not one
+// interval after the claim returned, which is already past the safe limit.
+func TestPostgresSlowClaimRenewsBeforeSafeLimit(t *testing.T) {
+	pool, table := integrationPool(t)
+	// Ticks every 200ms; the safe limit is 400ms after the claim starts.
+	const lease = 600 * time.Millisecond
+	tr := integrationTransport(t, pool, table, postgres.WithLease(lease))
+	sendIntegration(t, tr, "slow-claim")
+
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	// Conflicts with the ROW EXCLUSIVE lock of the claim's UPDATE.
+	if _, err := tx.Exec(t.Context(), "LOCK TABLE "+table+" IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan qumsg.Delivery, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		d, err := tr.Receive(ctx)
+		if err != nil {
+			t.Error(err)
+		}
+		received <- d
+	}()
+	// Wait until the claim is blocked on the table lock, then hold it for
+	// half the lease: the claim returns 300ms after it started.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var waiting bool
+		err := pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_locks
+			WHERE relation = $1::regclass AND NOT granted)`, table).Scan(&waiting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("claim never blocked on the table lock")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(lease / 2)
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	d := <-received
+	if d == nil {
+		t.FailNow()
+	}
+	defer func() { _ = d.Ack(context.Background()) }()
+	ctx, cancel := d.(qumsg.DeliveryContext).Context(t.Context())
+	defer cancel()
+
+	// Nothing holds the row: the heartbeat can renew whenever it tries.
+	select {
+	case <-ctx.Done():
+		var left float64
+		_ = pool.QueryRow(context.Background(), `SELECT
+				EXTRACT(EPOCH FROM locked_at + $1::bigint * interval '1 microsecond' - clock_timestamp())::float8
+			FROM `+table, lease.Microseconds()).Scan(&left)
+		t.Fatalf("healthy delivery canceled (%v) with %.0fms of lease left in the database",
+			context.Cause(ctx), left*1000)
+	case <-time.After(2 * lease):
+	}
+	if err := d.Ack(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPostgresSettleWaitingOnOwnCompleteIsNotLost settles a delivery while
+// its handler's own Complete still holds the row: the settlement waits on the
+// row lock and, once Complete commits, must see an ended message (nil), not
+// a lost lease, although the row was there when its statement began.
+func TestPostgresSettleWaitingOnOwnCompleteIsNotLost(t *testing.T) {
+	settlements := map[string]func(qumsg.Delivery, context.Context) error{
+		"ack":     qumsg.Delivery.Ack,
+		"nack":    qumsg.Delivery.Nack,
+		"release": func(d qumsg.Delivery, ctx context.Context) error { return d.(qumsg.ReleasableDelivery).Release(ctx) },
+	}
+	for name, settle := range settlements {
+		t.Run(name, func(t *testing.T) {
+			pool, table := integrationPool(t)
+			tr := integrationTransport(t, pool, table)
+			sendIntegration(t, tr, name)
+			d := receiveIntegration(t, tr)
+			ctx := tr.Propagator().Extract(t.Context(), d.Envelope())
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.Background())
+			if err := tr.Complete(ctx, tx); err != nil {
+				t.Fatal(err)
+			}
+
+			settled := make(chan error, 1)
+			go func() { settled <- settle(d, t.Context()) }()
+			// Wait until the settlement queues behind the Complete's row lock.
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				var waiting bool
+				err := pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+					WHERE wait_event_type = 'Lock' AND position($1 IN query) > 0)`, table).Scan(&waiting)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("settlement never waited on the row lock")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-settled; err != nil {
+				t.Fatalf("%s after our own Complete = %v, want nil", name, err)
+			}
+			if n := countIntegration(t, pool, table); n != 0 {
+				t.Fatalf("%d messages left, want 0", n)
+			}
+		})
+	}
+}
+
 func TestPostgresConcurrentReceivers(t *testing.T) {
 	pool, table := integrationPool(t)
 	tr := integrationTransport(t, pool, table)

@@ -813,7 +813,11 @@ func (d *delivery) startHeartbeat(claimedAt time.Time) {
 		// Count from before the claim/renewal request, not its response: a
 		// slow connection must not extend our estimate of ownership.
 		safeUntil := claimedAt.Add(2 * every)
+		// The first renewal is due one interval after the claim started, like
+		// every later one after its renewal started: a slow claim must not
+		// leave less than an interval of retries before safeUntil.
 		ticker := time.NewTicker(every)
+		ticker.Reset(max(time.Until(claimedAt.Add(every)), time.Millisecond))
 		defer ticker.Stop()
 		for {
 			expiry := time.NewTimer(time.Until(safeUntil))
@@ -938,7 +942,17 @@ func (t *Transport) fenced(ctx context.Context, op, sql string, d *delivery, ext
 		return fmt.Errorf("postgres: %s %d: %w", op, d.id, err)
 	}
 	if !changed && exists {
-		return fmt.Errorf("%w: message %d", ErrLeaseLost, d.id)
+		// exists comes from the statement's snapshot, taken before it waited
+		// on the row lock: a row the handler's own Complete deleted while
+		// this waited still shows. Look again: an ended message is not a
+		// lost lease. Our claim's owner token is never reused, so a row that
+		// is still there belongs to someone else.
+		if err := t.pool.QueryRow(ctx, t.sql.exists, d.id).Scan(&exists); err != nil {
+			return fmt.Errorf("postgres: %s %d: %w", op, d.id, err)
+		}
+		if exists {
+			return fmt.Errorf("%w: message %d", ErrLeaseLost, d.id)
+		}
 	}
 	return nil
 }
@@ -957,6 +971,7 @@ type statements struct {
 	complete string
 	release  string
 	own      string
+	exists   string
 }
 
 // fence matches the row only while this delivery holds its lease: same
@@ -996,7 +1011,8 @@ func newStatements(table string) statements {
 			WHERE id = (SELECT id FROM {t} WHERE {fence} FOR UPDATE NOWAIT)`),
 		// The outer SELECT sees the table as it was before the statement,
 		// so exists tells a lost lease (the row is still there) from an
-		// ended message.
+		// ended message; fenced checks a "still there" again, since that
+		// snapshot predates any wait on the row lock.
 		ack: r.Replace(`WITH done AS (DELETE FROM {t} WHERE {fence} RETURNING 1)
 			SELECT EXISTS (SELECT 1 FROM done), EXISTS (SELECT 1 FROM {t} WHERE id = $1)`),
 		nack: r.Replace(`WITH done AS (
@@ -1004,7 +1020,9 @@ func newStatements(table string) statements {
 				WHERE {fence} RETURNING 1)
 			SELECT EXISTS (SELECT 1 FROM done), EXISTS (SELECT 1 FROM {t} WHERE id = $1)`),
 		complete: r.Replace(`DELETE FROM {t} WHERE {fence}`),
-		own:      r.Replace(`SELECT id FROM {t} WHERE {fence} FOR UPDATE`),
+		// A fresh look at whether the message is still there, for fenced.
+		exists: r.Replace(`SELECT EXISTS (SELECT 1 FROM {t} WHERE id = $1)`),
+		own:    r.Replace(`SELECT id FROM {t} WHERE {fence} FOR UPDATE`),
 		release: r.Replace(`WITH done AS (
 			UPDATE {t} SET locked_by = NULL, locked_at = NULL, available_at = now(), attempt = attempt - 1
 			WHERE {fence} RETURNING 1)
