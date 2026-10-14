@@ -36,11 +36,10 @@ func TestPropagatorsCarryContextValuesThroughTheTransport(t *testing.T) {
 		qumsg.ContextValue("actor", metaKey("actor")),
 	)
 
-	router := qumsg.NewRouter()
-	if err := router.Route[job](tr); err != nil {
+	producer := qumsg.New(propagators)
+	if err := producer.Route[job](tr); err != nil {
 		t.Fatal(err)
 	}
-	producer := qumsg.New(propagators, qumsg.WithRouter(router))
 	ctx := context.WithValue(t.Context(), metaKey("request"), "req-1") // no actor
 	if err := producer.Dispatch(ctx, job{N: 1}); err != nil {
 		t.Fatal(err)

@@ -404,11 +404,10 @@ func TestPostgresHeartbeatStress(t *testing.T) {
 				t.Fatal(err)
 			}
 			ct := &countingTransport{Transport: tr, state: state, t: t}
-			router := qumsg.NewRouter()
-			if err := router.Route[stressMessage](ct); err != nil {
+			bus := qumsg.New(qumsg.WithPropagators(tr.Propagator()))
+			if err := bus.Route[stressMessage](ct); err != nil {
 				t.Fatal(err)
 			}
-			bus := qumsg.New(qumsg.WithRouter(router), qumsg.WithPropagators(tr.Propagator()))
 			handler := stressHandler(t, pool, tr, table, effects, g.lease, plans, state)
 			if err := bus.Register(handler); err != nil {
 				t.Fatal(err)

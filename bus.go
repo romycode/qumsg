@@ -88,17 +88,18 @@ func ContinueOnError() Option {
 // Register all handlers before dispatching; once configured, a Bus is safe for
 // concurrent use.
 type Bus struct {
-	dispatch        HandleFunc // middleware + routing + handlers
-	consume         HandleFunc // middleware + handlers, for Consume
-	router          *Router
+	dispatch        HandleFunc   // middleware + send or handlers
+	consume         HandleFunc   // middleware + handlers, for Consume
 	middlewares     []Middleware // only used by New
 	propagators     []Propagator
 	allowNoHandler  bool
 	continueOnError bool
 
-	mu     sync.RWMutex
-	routes map[reflect.Type]route
-	names  map[string]reflect.Type
+	mu         sync.RWMutex
+	handlers   map[reflect.Type]route
+	names      map[string]reflect.Type // aliases of registered and routed types
+	transports map[reflect.Type]Transport
+	types      map[reflect.Type]Type // the Type of each routed type
 }
 
 // route runs the handlers registered for one message type.
@@ -150,8 +151,10 @@ func (hs handlers[T]) handleAll(ctx context.Context, msg T) error {
 // AllowNoHandler and ContinueOnError. It panics if an option is nil.
 func New(opts ...Option) *Bus {
 	b := &Bus{
-		routes: make(map[reflect.Type]route),
-		names:  make(map[string]reflect.Type),
+		handlers:   make(map[reflect.Type]route),
+		names:      make(map[string]reflect.Type),
+		transports: make(map[reflect.Type]Transport),
+		types:      make(map[reflect.Type]Type),
 	}
 
 	for i, opt := range opts {
@@ -192,8 +195,8 @@ func (b *Bus) Register[T any](handler func(context.Context, T) error) error {
 	}
 
 	// Copy on write: a dispatch that already read the route keeps its slice.
-	current, _ := b.routes[typ].(handlers[T])
-	b.routes[typ] = append(slices.Clip(current), handler)
+	current, _ := b.handlers[typ].(handlers[T])
+	b.handlers[typ] = append(slices.Clip(current), handler)
 
 	return nil
 }
@@ -206,47 +209,31 @@ func (b *Bus) chain(next HandleFunc) HandleFunc {
 	return next
 }
 
-// Dispatch runs the middleware chain and the handlers registered for the
-// concrete type of message. Handlers run sequentially; the first error stops
-// the execution unless the bus was created with ContinueOnError. The context
-// is checked before each handler: once it is done, the remaining handlers
-// are skipped.
+// Dispatch runs the middleware chain and then, for the concrete type of
+// message, either its handlers or, if the type is routed (see Route), the
+// send to its transport.
 //
-// If the router of the bus routes the type of message, Dispatch then sends
-// it to its transport, as if the route were the last handler: a handler
-// error prevents the send unless the bus was created with ContinueOnError,
-// and a routed type needs no local handlers.
+// Handlers run sequentially; the first error stops the execution unless the
+// bus was created with ContinueOnError. The context is checked before each
+// handler: once it is done, the remaining handlers are skipped.
+//
+// A routed message never runs its handlers in Dispatch: Consume runs them
+// when it receives the message. Dispatch returns the error of Send, unwrapped.
 func (b *Bus) Dispatch(ctx context.Context, message any) error {
 	return b.dispatch(ctx, message)
 }
 
-// sendOrHandle handles message and, if the router routes its type, sends it
-// to its transport.
+// sendOrHandle sends message to its transport if its type is routed, and
+// handles it otherwise.
 func (b *Bus) sendOrHandle(ctx context.Context, message any) error {
-	if b.router == nil || message == nil {
+	if message == nil {
 		return b.handle(ctx, message)
 	}
-	t, routed := b.router.transport(reflect.TypeOf(message))
+	t, routed := b.transport(reflect.TypeOf(message))
 	if !routed {
 		return b.handle(ctx, message)
 	}
-
-	var err error
-	if r, ok := b.lookup(message); ok {
-		err = r.handle(ctx, message, b.continueOnError)
-		if err != nil && !b.continueOnError {
-			return err
-		}
-	}
-	sendErr := t.Send(ctx, b.envelope(ctx, message))
-	switch {
-	case err == nil:
-		return sendErr // unwrapped, like a handler error
-	case sendErr == nil:
-		return err
-	default:
-		return errors.Join(err, sendErr)
-	}
+	return t.Send(ctx, b.envelope(ctx, message))
 }
 
 func (b *Bus) handle(ctx context.Context, message any) error {
@@ -280,7 +267,7 @@ func (b *Bus) handleWith(ctx context.Context, message any, allowNoHandler bool) 
 func (b *Bus) lookup(message any) (route, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	r, ok := b.routes[reflect.TypeOf(message)]
+	r, ok := b.handlers[reflect.TypeOf(message)]
 	return r, ok
 }
 

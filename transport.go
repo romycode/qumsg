@@ -14,13 +14,13 @@ var (
 	// ErrTransportClosed is returned by Transport.Receive when the transport
 	// is closed and has no more messages. Consume treats it as a normal stop.
 	ErrTransportClosed = errors.New("qumsg: transport closed")
-	// ErrNilTransport is returned by Router.Route and Router.RouteTypes when
+	// ErrNilTransport is returned by Bus.Route and Bus.RouteTypes when
 	// the transport is nil.
 	ErrNilTransport = errors.New("qumsg: nil transport")
-	// ErrUncomparableTransport is returned by Router.Route and
-	// Router.RouteTypes when the dynamic type of the transport is not
+	// ErrUncomparableTransport is returned by Bus.Route and
+	// Bus.RouteTypes when the dynamic type of the transport is not
 	// comparable, such as a struct value with a slice or map field. The
-	// router compares transports with ==, which would panic; use a pointer.
+	// bus compares transports with ==, which would panic; use a pointer.
 	ErrUncomparableTransport = errors.New("qumsg: transport type is not comparable")
 )
 
@@ -70,9 +70,9 @@ func Attempt(ctx context.Context) int {
 
 // Decoder is implemented by transports that must know the message types to
 // decode what they receive, such as one that stores messages as bytes.
-// Consume calls Accept, before receiving, with the types that the router of
-// the bus routes to the transport. Accept may be called more than once and
-// must keep the types it already accepted.
+// Consume calls Accept, before receiving, with the types that the bus routes
+// to the transport. Accept may be called more than once and must keep the
+// types it already accepted.
 type Decoder interface {
 	Accept(types ...Type) error
 }
@@ -131,9 +131,9 @@ func WithFailureHandler(f FailureHandler) ConsumeOption {
 // Consume receives messages from t and dispatches them on b until ctx is done
 // or t is closed, which return nil. Received messages run the middleware and
 // the handlers of b, but are never routed again, so the producer and the
-// worker can share the same router. If t is a Decoder, Consume first passes
-// it the types that the router of b routes to t, and fails with ErrNoRoutes
-// if there are none. A successful dispatch acknowledges the
+// worker can configure the same routes, and even be the same bus. If t is a
+// Decoder, Consume first passes it the types that b routes to t, and fails
+// with ErrNoRoutes if there are none. A successful dispatch acknowledges the
 // message; a failed one is negatively acknowledged so the transport delivers
 // it again, until the last attempt, which goes to the failure handler and is
 // acknowledged.
@@ -151,10 +151,7 @@ func (b *Bus) Consume(ctx context.Context, t Transport, opts ...ConsumeOption) e
 	}
 
 	if d, ok := t.(Decoder); ok {
-		var types []Type
-		if b.router != nil {
-			types = b.router.typesFor(t)
-		}
+		types := b.typesFor(t)
 		if len(types) == 0 {
 			return ErrNoRoutes
 		}

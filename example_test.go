@@ -186,30 +186,25 @@ type SendWelcomeEmail struct {
 	Email string
 }
 
-// README: "Ejecución asíncrona". Both processes share the router: the
-// producer sends the routed message and the worker consumes it with the real
-// handler.
+// README: "Ejecución asíncrona". The routed message is only sent by
+// Dispatch; Consume runs its handler when it receives it.
 func ExampleBus_Consume() {
 	ctx := context.Background()
 	transport := memory.New()
 
-	router := qumsg.NewRouter()
-	_ = router.Route[SendWelcomeEmail](transport)
-
-	producer := qumsg.New(qumsg.WithRouter(router))
-
-	worker := qumsg.New(qumsg.WithRouter(router))
-	_ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
+	bus := qumsg.New()
+	_ = bus.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
 		fmt.Println("Sending welcome email to", msg.Email)
 		return nil
 	})
+	_ = bus.Route[SendWelcomeEmail](transport)
 
-	_ = producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
-	_ = producer.Dispatch(ctx, SendWelcomeEmail{Email: "ana@example.com"})
+	_ = bus.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
+	_ = bus.Dispatch(ctx, SendWelcomeEmail{Email: "ana@example.com"})
 	fmt.Println("Queued:", transport.Len())
 
 	transport.Close() // Consume returns once the queue is drained
-	if err := worker.Consume(ctx, transport); err != nil {
+	if err := bus.Consume(ctx, transport); err != nil {
 		fmt.Println("error:", err)
 	}
 	// Output:
@@ -300,9 +295,8 @@ func ExampleTypeOf() {
 	}, invoiceEvents...)
 
 	transport := memory.New()
-	router := qumsg.NewRouter()
-	_ = router.RouteTypes(transport, invoiceEvents...)
-	producer := qumsg.New(qumsg.WithRouter(router))
+	producer := qumsg.New()
+	_ = producer.RouteTypes(transport, invoiceEvents...)
 
 	_ = bus.Dispatch(ctx, InvoicePaid{ID: "i-1"})
 	_ = bus.Dispatch(ctx, InvoiceVoided{ID: "i-1"})
@@ -322,16 +316,18 @@ func ExampleWithPropagators() {
 	ctx := context.Background()
 	transport := memory.New()
 	requestID := qumsg.ContextValue("request_id", requestIDKey{})
-	router := qumsg.NewRouter()
-	_ = router.Route[SendWelcomeEmail](transport)
 
-	producer := qumsg.New(qumsg.WithRouter(router), qumsg.WithPropagators(requestID))
-
-	worker := qumsg.New(qumsg.WithPropagators(requestID))
-	_ = worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
-		fmt.Println("Request", ctx.Value(requestIDKey{}), "sends email to", msg.Email)
-		return nil
-	})
+	// Producer and worker build the same bus.
+	newBus := func() *qumsg.Bus {
+		bus := qumsg.New(qumsg.WithPropagators(requestID))
+		_ = bus.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
+			fmt.Println("Request", ctx.Value(requestIDKey{}), "sends email to", msg.Email)
+			return nil
+		})
+		_ = bus.Route[SendWelcomeEmail](transport)
+		return bus
+	}
+	producer, worker := newBus(), newBus()
 
 	ctx = context.WithValue(ctx, requestIDKey{}, "req-42")
 	_ = producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})

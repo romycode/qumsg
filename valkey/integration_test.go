@@ -357,18 +357,17 @@ func TestMaxLenTrimsTheStream(t *testing.T) {
 func TestConsumeEndToEnd(t *testing.T) {
 	tr, _, _ := newTransport(t)
 
-	router := qumsg.NewRouter()
-	if err := router.Route[userCreated](tr); err != nil {
+	producer := qumsg.New()
+	if err := producer.Route[userCreated](tr); err != nil {
 		t.Fatal(err)
 	}
-	producer := qumsg.New(qumsg.WithRouter(router))
 
 	const total = 50
 	var mu sync.Mutex
 	seen := make(map[string]int)
 	allDone := make(chan struct{})
 
-	worker := qumsg.New(qumsg.WithRouter(router))
+	worker := producer // one bus: Dispatch only sends, Consume handles
 	if err := worker.Register(func(_ context.Context, msg userCreated) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -414,11 +413,10 @@ func TestConsumeHandsOverFailedMessages(t *testing.T) {
 	mustSend(t, tr, unregistered{})
 
 	boom := errors.New("boom")
-	router := qumsg.NewRouter()
-	if err := router.Route[userCreated](tr); err != nil {
+	worker := qumsg.New()
+	if err := worker.Route[userCreated](tr); err != nil {
 		t.Fatal(err)
 	}
-	worker := qumsg.New(qumsg.WithRouter(router))
 	attempts := 0
 	if err := worker.Register(func(context.Context, userCreated) error {
 		attempts++
