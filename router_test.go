@@ -18,62 +18,57 @@ func (valueTransport) Receive(context.Context) (qumsg.Delivery, error) {
 }
 
 func TestRouteRejectsUncomparableTransports(t *testing.T) {
-	router := qumsg.NewRouter()
+	bus := qumsg.New()
 
 	// Without the check, routing the type a second time compares two
 	// valueTransport interfaces with == and panics.
 	for range 2 {
-		if err := router.Route[job](valueTransport{}); !errors.Is(err, qumsg.ErrUncomparableTransport) {
+		if err := bus.Route[job](valueTransport{}); !errors.Is(err, qumsg.ErrUncomparableTransport) {
 			t.Fatalf("got %v, want ErrUncomparableTransport", err)
 		}
 	}
-	if err := router.RouteTypes(valueTransport{}, qumsg.TypeOf[userCreated]()); !errors.Is(err, qumsg.ErrUncomparableTransport) {
+	if err := bus.RouteTypes(valueTransport{}, qumsg.TypeOf[userCreated]()); !errors.Is(err, qumsg.ErrUncomparableTransport) {
 		t.Fatalf("RouteTypes: got %v, want ErrUncomparableTransport", err)
 	}
 
 	// A pointer to the same type is comparable.
-	if err := router.Route[job](&valueTransport{}); err != nil {
+	if err := bus.Route[job](&valueTransport{}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestRoutedMessagesAreHandledAndSent(t *testing.T) {
+func TestRoutedMessagesAreOnlySent(t *testing.T) {
 	tr := memory.New()
-	router := qumsg.NewRouter()
-	if err := router.RouteTypes(tr, qumsg.TypeOf[userCreated](), qumsg.TypeOf[productCreated]()); err != nil {
-		t.Fatal(err)
-	}
-
-	var handled []any
-	var queued []int // messages in the transport when each handler ran
 	var middleware int
-	bus := qumsg.New(qumsg.WithRouter(router), qumsg.WithMiddleware(func(next qumsg.HandleFunc) qumsg.HandleFunc {
+	bus := qumsg.New(qumsg.WithMiddleware(func(next qumsg.HandleFunc) qumsg.HandleFunc {
 		return func(ctx context.Context, msg any) error {
 			middleware++
 			return next(ctx, msg)
 		}
 	}))
+	if err := bus.RouteTypes(tr, qumsg.TypeOf[userCreated](), qumsg.TypeOf[productCreated]()); err != nil {
+		t.Fatal(err)
+	}
+
+	var handled []any
 	record := func(_ context.Context, msg any) error {
 		handled = append(handled, msg)
-		queued = append(queued, tr.Len())
 		return nil
 	}
 	if err := bus.RegisterFor(record, qumsg.TypeOf[userCreated](), qumsg.TypeOf[job]()); err != nil {
 		t.Fatal(err)
 	}
 
-	// productCreated is routed without local handlers: no ErrNoHandler.
+	// productCreated is routed without handlers: no ErrNoHandler.
 	for _, msg := range []any{userCreated{ID: "u"}, productCreated{ID: "p"}, job{N: 1}} {
 		if err := bus.Dispatch(t.Context(), msg); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if len(handled) != 2 || handled[0] != (userCreated{ID: "u"}) || handled[1] != (job{N: 1}) {
-		t.Fatalf("got handled %v, want userCreated and job", handled)
-	}
-	if queued[0] != 0 {
-		t.Fatal("userCreated was sent before its local handler ran")
+	// userCreated has a handler, but it is routed: Dispatch only sends it.
+	if len(handled) != 1 || handled[0] != (job{N: 1}) {
+		t.Fatalf("got handled %v, want only job", handled)
 	}
 	if middleware != 3 {
 		t.Fatalf("middleware ran %d times, want 3", middleware)
@@ -89,72 +84,62 @@ func TestRoutedMessagesAreHandledAndSent(t *testing.T) {
 	}
 }
 
-func TestRoutedMessagesFollowTheErrorPolicy(t *testing.T) {
-	boom := errors.New("boom")
-	failing := func(context.Context, job) error { return boom }
-
-	t.Run("a handler error prevents the send", func(t *testing.T) {
-		tr := memory.New()
-		router := qumsg.NewRouter()
-		if err := router.Route[job](tr); err != nil {
-			t.Fatal(err)
-		}
-		bus := qumsg.New(qumsg.WithRouter(router))
-		if err := bus.Register(failing); err != nil {
-			t.Fatal(err)
-		}
-		if err := bus.Dispatch(t.Context(), job{}); err != boom {
-			t.Fatalf("got %v, want the handler error unwrapped", err)
-		}
-		if tr.Len() != 0 {
-			t.Fatal("the message was sent")
-		}
-	})
-
-	t.Run("ContinueOnError sends anyway and joins the errors", func(t *testing.T) {
-		tr := memory.New()
-		tr.Close() // Send fails with ErrTransportClosed
-		router := qumsg.NewRouter()
-		if err := router.Route[job](tr); err != nil {
-			t.Fatal(err)
-		}
-		bus := qumsg.New(qumsg.WithRouter(router), qumsg.ContinueOnError())
-		if err := bus.Register(failing); err != nil {
-			t.Fatal(err)
-		}
-		err := bus.Dispatch(t.Context(), job{})
-		if !errors.Is(err, boom) || !errors.Is(err, qumsg.ErrTransportClosed) {
-			t.Fatalf("got %v, want both errors", err)
-		}
-	})
-
-	t.Run("a send error alone is unwrapped", func(t *testing.T) {
-		tr := memory.New()
-		tr.Close()
-		router := qumsg.NewRouter()
-		if err := router.Route[job](tr); err != nil {
-			t.Fatal(err)
-		}
-		if err := qumsg.New(qumsg.WithRouter(router)).Dispatch(t.Context(), job{}); err != qumsg.ErrTransportClosed {
-			t.Fatalf("got %v, want ErrTransportClosed", err)
-		}
-	})
-}
-
-// The worker shares the router with the producer: what it consumes runs its
-// handlers instead of being sent again.
-func TestConsumeHandlesRoutedMessagesLocally(t *testing.T) {
+func TestDispatchReturnsTheSendErrorUnwrapped(t *testing.T) {
 	tr := memory.New()
-	router := qumsg.NewRouter()
-	if err := router.Route[job](tr); err != nil {
+	tr.Close()
+	bus := qumsg.New(qumsg.ContinueOnError())
+	if err := bus.Route[job](tr); err != nil {
 		t.Fatal(err)
 	}
-	if err := qumsg.New(qumsg.WithRouter(router)).Dispatch(t.Context(), job{N: 1}); err != nil {
+	if err := bus.Dispatch(t.Context(), job{}); err != qumsg.ErrTransportClosed {
+		t.Fatalf("got %v, want ErrTransportClosed", err)
+	}
+}
+
+// One bus sends and consumes: Dispatch sends the routed message and Consume
+// runs its handler once.
+func TestOneBusSendsAndConsumes(t *testing.T) {
+	tr := memory.New()
+	bus := qumsg.New()
+	var got []job
+	if err := bus.Register(func(_ context.Context, j job) error { got = append(got, j); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Route[job](tr); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Dispatch(t.Context(), job{N: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatal("Dispatch ran the handler of a routed type")
+	}
+	tr.Close()
+	if err := bus.Consume(t.Context(), tr); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != (job{N: 1}) || tr.Len() != 0 {
+		t.Fatalf("got %v, %d queued", got, tr.Len())
+	}
+}
+
+// The worker configures the same routes as the producer: what it consumes
+// runs its handlers instead of being sent again.
+func TestConsumeHandlesRoutedMessagesLocally(t *testing.T) {
+	tr := memory.New()
+	producer := qumsg.New()
+	if err := producer.Route[job](tr); err != nil {
+		t.Fatal(err)
+	}
+	if err := producer.Dispatch(t.Context(), job{N: 1}); err != nil {
 		t.Fatal(err)
 	}
 	tr.Close()
 
-	worker := qumsg.New(qumsg.WithRouter(router))
+	worker := qumsg.New()
+	if err := worker.Route[job](tr); err != nil {
+		t.Fatal(err)
+	}
 	var got []job
 	if err := worker.Register(func(_ context.Context, j job) error { got = append(got, j); return nil }); err != nil {
 		t.Fatal(err)
@@ -167,9 +152,9 @@ func TestConsumeHandlesRoutedMessagesLocally(t *testing.T) {
 	}
 }
 
-func TestRouterValidation(t *testing.T) {
+func TestRouteValidation(t *testing.T) {
 	t.Run("nil transport", func(t *testing.T) {
-		if err := qumsg.NewRouter().Route[job](nil); !errors.Is(err, qumsg.ErrNilTransport) {
+		if err := qumsg.New().Route[job](nil); !errors.Is(err, qumsg.ErrNilTransport) {
 			t.Fatalf("got %v, want ErrNilTransport", err)
 		}
 	})
@@ -183,38 +168,59 @@ func TestRouterValidation(t *testing.T) {
 			"interface":  {qumsg.TypeOf[qumsg.NamedMessage](), qumsg.ErrInterfaceType},
 			"zero Type":  {qumsg.Type{}, qumsg.ErrZeroType},
 		} {
-			if err := qumsg.NewRouter().RouteTypes(memory.New(), tc.typ); !errors.Is(err, tc.want) {
+			if err := qumsg.New().RouteTypes(memory.New(), tc.typ); !errors.Is(err, tc.want) {
 				t.Errorf("%s: got %v, want %v", name, err, tc.want)
 			}
 		}
 	})
 
 	t.Run("one transport per type", func(t *testing.T) {
-		router, a := qumsg.NewRouter(), memory.New()
-		if err := router.Route[job](a); err != nil {
+		bus, a := qumsg.New(), memory.New()
+		if err := bus.Route[job](a); err != nil {
 			t.Fatal(err)
 		}
-		if err := router.Route[job](a); err != nil {
+		if err := bus.Route[job](a); err != nil {
 			t.Fatalf("routing again to the same transport: %v", err)
 		}
-		if err := router.Route[job](memory.New()); !errors.Is(err, qumsg.ErrAlreadyRouted) {
+		if err := bus.Route[job](memory.New()); !errors.Is(err, qumsg.ErrAlreadyRouted) {
 			t.Fatalf("got %v, want ErrAlreadyRouted", err)
 		}
 	})
 
 	t.Run("all or nothing", func(t *testing.T) {
-		router, tr := qumsg.NewRouter(), memory.New()
-		if err := router.Route[userCreated](tr); err != nil {
+		bus, tr := qumsg.New(), memory.New()
+		if err := bus.Route[userCreated](tr); err != nil {
 			t.Fatal(err)
 		}
-		err := router.RouteTypes(tr, qumsg.TypeOf[productCreated](), qumsg.TypeOf[sameName]())
+		err := bus.RouteTypes(tr, qumsg.TypeOf[productCreated](), qumsg.TypeOf[sameName]())
 		if !errors.Is(err, qumsg.ErrDuplicateName) {
 			t.Fatalf("got %v, want ErrDuplicateName", err)
 		}
 		// productCreated was not routed: it is still handled locally.
-		bus := qumsg.New(qumsg.WithRouter(router))
 		if err := bus.Dispatch(t.Context(), productCreated{}); !errors.Is(err, qumsg.ErrNoHandler) {
 			t.Fatalf("got %v, want ErrNoHandler", err)
+		}
+	})
+
+	t.Run("aliases are shared with Register", func(t *testing.T) {
+		bus := qumsg.New()
+		if err := bus.Register(func(context.Context, userCreated) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if err := bus.Route[sameName](memory.New()); !errors.Is(err, qumsg.ErrDuplicateName) {
+			t.Fatalf("Route: got %v, want ErrDuplicateName", err)
+		}
+		// Routing the registered type itself reuses its alias.
+		if err := bus.Route[userCreated](memory.New()); err != nil {
+			t.Fatal(err)
+		}
+
+		bus = qumsg.New()
+		if err := bus.Route[userCreated](memory.New()); err != nil {
+			t.Fatal(err)
+		}
+		if err := bus.Register(func(context.Context, sameName) error { return nil }); !errors.Is(err, qumsg.ErrDuplicateName) {
+			t.Fatalf("Register: got %v, want ErrDuplicateName", err)
 		}
 	})
 }
@@ -235,15 +241,15 @@ func TestConsumeTellsADecoderTheRoutedTypes(t *testing.T) {
 	tr := &decoderTransport{Transport: memory.New()}
 	tr.Close()
 	other := memory.New()
-	router := qumsg.NewRouter()
-	if err := router.RouteTypes(tr, qumsg.TypeOf[userCreated](), qumsg.TypeOf[job]()); err != nil {
+	bus := qumsg.New()
+	if err := bus.RouteTypes(tr, qumsg.TypeOf[userCreated](), qumsg.TypeOf[job]()); err != nil {
 		t.Fatal(err)
 	}
-	if err := router.Route[productCreated](other); err != nil {
+	if err := bus.Route[productCreated](other); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := qumsg.New(qumsg.WithRouter(router)).Consume(t.Context(), tr); err != nil {
+	if err := bus.Consume(t.Context(), tr); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -257,7 +263,7 @@ func TestConsumeTellsADecoderTheRoutedTypes(t *testing.T) {
 	t.Run("Accept error", func(t *testing.T) {
 		broken := errors.New("broken")
 		tr.acceptErr = broken
-		if err := qumsg.New(qumsg.WithRouter(router)).Consume(t.Context(), tr); !errors.Is(err, broken) {
+		if err := bus.Consume(t.Context(), tr); !errors.Is(err, broken) {
 			t.Fatalf("got %v, want the Accept error", err)
 		}
 	})

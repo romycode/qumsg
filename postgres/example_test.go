@@ -60,17 +60,15 @@ func Example() {
 	transport, err := postgres.New(pool, table)
 	mustExample(err)
 	defer transport.Close()
-	router := qumsg.NewRouter()
-	mustExample(router.Route[SendWelcomeEmail](transport))
-	producer := qumsg.New(qumsg.WithRouter(router))
-	mustExample(producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"}))
-	worker := qumsg.New(qumsg.WithRouter(router))
-	mustExample(worker.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
+	bus := qumsg.New()
+	mustExample(bus.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
 		fmt.Println("Sending welcome email to", msg.Email)
 		cancel()
 		return nil
 	}))
-	mustExample(worker.Consume(ctx, transport))
+	mustExample(bus.Route[SendWelcomeEmail](transport))
+	mustExample(bus.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})) // only sends
+	mustExample(bus.Consume(ctx, transport))
 	// Output: Sending welcome email to albert@example.com
 }
 
@@ -101,9 +99,8 @@ func ExampleTransport_Complete() {
 	transport, err := postgres.New(pool, table)
 	mustExample(err)
 	defer transport.Close()
-	router := qumsg.NewRouter()
-	mustExample(router.Route[SendWelcomeEmail](transport))
-	bus := qumsg.New(qumsg.WithRouter(router), qumsg.WithPropagators(transport.Propagator()))
+	bus := qumsg.New(qumsg.WithPropagators(transport.Propagator()))
+	mustExample(bus.Route[SendWelcomeEmail](transport))
 	mustExample(bus.Register(func(ctx context.Context, msg SendWelcomeEmail) error {
 		tx, err := pool.Begin(ctx)
 		if err != nil {

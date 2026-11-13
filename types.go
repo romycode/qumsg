@@ -12,13 +12,13 @@ var ErrZeroType = errors.New("qumsg: zero Type, create it with TypeOf")
 // Type is a message type as a value. A generic method cannot be part of an
 // interface or be called on a list of types, so code that handles a family
 // of messages (the events of a package, say) would need one Register[T] or
-// Router.Route[T] call per type, repeated wherever the family is used. TypeOf
+// Bus.Route[T] call per type, repeated wherever the family is used. TypeOf
 // captures T once, and the list can then be passed to Bus.RegisterFor or
-// Router.RouteTypes:
+// Bus.RouteTypes:
 //
 //	var Events = []qumsg.Type{qumsg.TypeOf[UserCreated](), qumsg.TypeOf[UserDeleted]()}
 //
-//	router.RouteTypes(transport, Events...)
+//	bus.RouteTypes(transport, Events...)
 //
 // The zero Type is invalid.
 type Type struct {

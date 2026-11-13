@@ -24,13 +24,15 @@ func (SendWelcomeEmail) Name() string {
 }
 ```
 
-Los dos procesos comparten las rutas: una función que crea el router para el transporte de cada proceso.
+Los dos procesos crean el bus igual, con una función: `SendWelcomeEmail` va enrutado a Valkey, así que `Dispatch` lo envía y `Consume` ejecuta su handler.
 
 ```go
-func routes(t qumsg.Transport) *qumsg.Router {
-    router := qumsg.NewRouter()
-    _ = router.Route[SendWelcomeEmail](t)
-    return router
+func newBus(t qumsg.Transport) (*qumsg.Bus, error) {
+    bus := qumsg.New()
+    if err := bus.Register(sendWelcomeEmail); err != nil {
+        return nil, err
+    }
+    return bus, bus.Route[SendWelcomeEmail](t)
 }
 ```
 
@@ -43,24 +45,26 @@ if err != nil {
 }
 defer client.Close()
 
-producer := qumsg.New(qumsg.WithRouter(routes(valkey.New(client, "emails"))))
+producer, err := newBus(valkey.New(client, "emails"))
+if err != nil {
+    return err
+}
 err = producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 ```
 
-El proceso worker consume el stream con sus handlers:
+El proceso worker consume el stream y ejecuta el handler:
 
 ```go
 transport := valkey.New(client, "emails")
 
-worker := qumsg.New(qumsg.WithRouter(routes(transport)))
-if err := worker.Register(sendWelcomeEmail); err != nil {
+worker, err := newBus(transport)
+if err != nil {
     return err
 }
-
 return worker.Consume(ctx, transport, qumsg.WithWorkers(4))
 ```
 
-El transporte implementa `qumsg.Decoder`: antes de recibir, `Consume` le pasa con `Accept` los tipos que el router envía a ese transporte, y así sabe decodificar cada alias. Esos tipos siguen las mismas reglas que `qumsg.Bus.Register`: el alias no puede estar vacío ni repetirse entre tipos. Si alguno no es válido, `Consume` devuelve el error sin empezar a recibir.
+El transporte implementa `qumsg.Decoder`: antes de recibir, `Consume` le pasa con `Accept` los tipos que el bus enruta a ese transporte, y así sabe decodificar cada alias. Esos tipos siguen las mismas reglas que `qumsg.Bus.Register`: el alias no puede estar vacío ni repetirse entre tipos. Si alguno no es válido, `Consume` devuelve el error sin empezar a recibir.
 
 Para una familia de mensajes, enruta una lista de [`qumsg.Type`](../README.md#familias-de-mensajes):
 
@@ -70,7 +74,7 @@ var EmailMessages = []qumsg.Type{
     qumsg.TypeOf[SendPasswordReset](),
 }
 
-_ = router.RouteTypes(transport, EmailMessages...)
+_ = bus.RouteTypes(transport, EmailMessages...)
 ```
 
 ## Cómo funciona

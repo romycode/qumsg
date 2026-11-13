@@ -6,6 +6,12 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ## [Sin publicar]
 
+### Cambiado
+
+- **Incompatible:** las rutas pasan del `Router` al bus: `bus.Route[T](transport)` y `bus.RouteTypes(transport, types...)`. Se eliminan `qumsg.Router`, `qumsg.NewRouter` y `qumsg.WithRouter`.
+- **Incompatible:** un mensaje enrutado **solo se envía**: `Dispatch` ya no ejecuta antes sus handlers locales, que pasan a ejecutarse únicamente en `Consume`. Un mismo bus puede enviar y consumir sin ejecutar dos veces un handler, y pasar un tipo a asíncrono es añadir su `Route`. Desaparece la combinación con `ContinueOnError`: `Dispatch` devuelve el error de `Send` sin envolver. Para manejar en local y además enviar, el handler local despacha otro mensaje enrutado.
+- Los alias son únicos en el bus entre tipos registrados y enrutados (`ErrDuplicateName`).
+
 ## [0.8.4] - 2026-10-14
 
 El núcleo y los transportes comparten la versión `v0.8.4`.

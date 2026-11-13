@@ -24,13 +24,15 @@ func (SendWelcomeEmail) Name() string {
 }
 ```
 
-Los dos procesos comparten las rutas: una función que crea el router para el transporte de cada proceso.
+Los dos procesos crean el bus igual, con una función: `SendWelcomeEmail` va enrutado a la tabla, así que `Dispatch` lo inserta y `Consume` ejecuta su handler.
 
 ```go
-func routes(t qumsg.Transport) *qumsg.Router {
-    router := qumsg.NewRouter()
-    _ = router.Route[SendWelcomeEmail](t)
-    return router
+func newBus(t *postgres.Transport) (*qumsg.Bus, error) {
+    bus := qumsg.New()
+    if err := bus.Register(sendWelcomeEmail); err != nil {
+        return nil, err
+    }
+    return bus, bus.Route[SendWelcomeEmail](t)
 }
 ```
 
@@ -48,11 +50,14 @@ if err != nil {
     return err
 }
 
-producer := qumsg.New(qumsg.WithRouter(routes(transport)))
+producer, err := newBus(transport)
+if err != nil {
+    return err
+}
 err = producer.Dispatch(ctx, SendWelcomeEmail{Email: "albert@example.com"})
 ```
 
-El proceso worker consume la tabla con sus handlers:
+El proceso worker consume la tabla y ejecuta el handler:
 
 ```go
 transport, err := postgres.New(pool, "email_messages")
@@ -61,15 +66,14 @@ if err != nil {
 }
 defer transport.Close()
 
-worker := qumsg.New(qumsg.WithRouter(routes(transport)))
-if err := worker.Register(sendWelcomeEmail); err != nil {
+worker, err := newBus(transport)
+if err != nil {
     return err
 }
-
 return worker.Consume(ctx, transport, qumsg.WithWorkers(4), qumsg.WithMaxAttempts(5))
 ```
 
-El transporte implementa `qumsg.Decoder`: antes de recibir, `Consume` le pasa con `Accept` los tipos que el router envía a ese transporte, y así sabe decodificar cada alias. Esos tipos siguen las mismas reglas que `qumsg.Bus.Register`: el alias no puede estar vacío ni repetirse entre tipos. Si alguno no es válido, `Consume` devuelve el error sin empezar a recibir.
+El transporte implementa `qumsg.Decoder`: antes de recibir, `Consume` le pasa con `Accept` los tipos que el bus enruta a ese transporte, y así sabe decodificar cada alias. Esos tipos siguen las mismas reglas que `qumsg.Bus.Register`: el alias no puede estar vacío ni repetirse entre tipos. Si alguno no es válido, `Consume` devuelve el error sin empezar a recibir.
 
 `Close` libera la conexión de `LISTEN` del transporte; llámalo cuando `Consume` haya terminado y antes de cerrar el pool.
 
@@ -160,10 +164,8 @@ err = executor.WithinTransaction(ctx, func(ctx context.Context) error {
 Por defecto, el trabajo del handler y el `Ack` que `Consume` hace después **no** son una transacción: si el proceso cae entre los dos, el mensaje se entrega otra vez. Cuando la escritura final del handler debe ser atómica con el fin del mensaje, el handler llama a `Transport.Complete` dentro de su transacción:
 
 ```go
-worker := qumsg.New(
-    qumsg.WithRouter(routes(transport)),
-    qumsg.WithPropagators(transport.Propagator()), // lleva el lease al ctx del handler
-)
+worker := qumsg.New(qumsg.WithPropagators(transport.Propagator())) // lleva el lease al ctx del handler
+_ = worker.Route[VerifyResource](transport)
 
 _ = worker.Register(func(ctx context.Context, msg VerifyResource) error {
     return executor.WithinTransaction(ctx, func(ctx context.Context) error {
@@ -270,7 +272,7 @@ Pasos para sustituir `internal/platform/jobs` de delusic (colas `resource_jobs` 
 2. **Mensajes** en `internal/resources`, con alias estables:
    - `VerifyResource{OrgID, ResourceID}`, `Name() = "resources.verify"`, `DedupKey() = "verify:" + ResourceID`: un único job de verificación por recurso, como el `UNIQUE (subject_id)` actual.
    - `CleanupResource{OrgID, ResourceID, StorageKey}`, `Name() = "resources.cleanup"`, `DedupKey() = "cleanup:" + ResourceID`. La clave de almacenamiento viaja en el payload en vez de en un `ObjectKeyStamp`.
-3. **Router y bus compartidos** en `cmd/api` y `cmd/worker`: un transporte por tabla con `postgres.WithDB(executor)` (el `database.DB` del diseño del ejecutor), `router.Route[VerifyResource](verifications)` y `router.Route[CleanupResource](cleanups)`, y un bus `qumsg.New(qumsg.WithRouter(router))`. Para el trazado, un `Propagator` que inyecte `traceparent` en los metadatos sustituye al `TraceStamp`.
+3. **El mismo bus** en `cmd/api` y `cmd/worker`, creado por una función común: un transporte por tabla con `postgres.WithDB(executor)` (el `database.DB` del diseño del ejecutor), `bus.Route[VerifyResource](verifications)` y `bus.Route[CleanupResource](cleanups)`. La API solo despacha (los mensajes enrutados se insertan sin ejecutar handlers); el worker llama a `Consume`. Para el trazado, un `Propagator` que inyecte `traceparent` en los metadatos sustituye al `TraceStamp`.
 4. **Envío dentro de las transacciones del servicio.** En `Service.Complete`, dentro de `WithinTransaction`, tras `StartProcessing`: `bus.Dispatch(ctx, VerifyResource{…})` en lugar de `tx.Jobs.Enqueue`. En `Service.Delete`, tras borrar: `bus.Dispatch(postgres.ContextWithDelay(ctx, delay), CleanupResource{…})`, con `delay` = TTL de la URL prefirmada si el recurso seguía subiendo y 0 si no (lo que hoy calcula `cleanupAt`). El ejecutor resuelve la transacción del `ctx`, así que mensaje y escritura se confirman o se revierten juntos.
 5. **Workers.** Ambos consumen con `qumsg.WithUnlimitedAttempts()` y `qumsg.WithCancelOnShutdown()`. El verificador consulta `qumsg.Attempt(ctx)` y registra el fallo terminal junto con `Complete` en su transacción; si esa escritura falla, el mensaje se conserva para reintentar. La limpieza reintenta sin límite. Opciones de las colas actuales: `WithLease(2*time.Minute)` y `WithBackoff(jobs.DefaultBackoff)` (10 s doblando hasta 10 min).
 6. **Idempotencia.** `FinishVerification` y `FailVerification` ya solo cambian recursos en `processing`, y el `Cleaner` ya tolera repetir el borrado; con eso basta para la entrega al menos una vez. Si se quiere conservar la atomicidad actual de "escritura final + fin del job", el bus del worker añade `transport.Propagator()` y esos métodos llaman a `transport.Complete(ctx, executor)` dentro de su `WithinTransaction` en lugar de `queue.Complete`.

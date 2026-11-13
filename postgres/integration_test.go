@@ -755,11 +755,10 @@ func TestPostgresPoisonMessagesReachFailureHandler(t *testing.T) {
 			if _, err := pool.Exec(t.Context(), "INSERT INTO "+table+" (name,payload,metadata) VALUES ($1,$2,$3::jsonb)", poison.name, []byte(poison.payload), poison.metadata); err != nil {
 				t.Fatal(err)
 			}
-			router := qumsg.NewRouter()
-			if err := router.Route[integrationMessage](tr); err != nil {
+			bus := qumsg.New()
+			if err := bus.Route[integrationMessage](tr); err != nil {
 				t.Fatal(err)
 			}
-			bus := qumsg.New(qumsg.WithRouter(router))
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			failures := 0
